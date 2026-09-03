@@ -48,11 +48,22 @@ SCREENS: coordinates live in PROFILES, one entry per monitor/layout,
 selected with a CLI arg. Calibrate once per profile and don't move or
 resize the window on that screen afterwards.
 
-COMMANDS  (a profile name can be added to any of them, e.g. 'read 4k')
+Any command also accepts, in any order:
+  main | 4k               which screen profile's coordinates to use
+  fast | steady | safe    which timing profile to run at (default steady)
+  --dry                   decide and log, send no input
+  --chart | --pickorder   override the strategy for this run
+e.g.  python inside_track_bot.py run fast
+      python inside_track_bot.py run 4k fast --dry
+
+COMMANDS
   python inside_track_bot.py calibrate [profile]  capture window -> calibrate.png
   python inside_track_bot.py probe [profile]      probe.png with boxes drawn
   python inside_track_bot.py read [profile]       one verified board read
   python inside_track_bot.py keytest [profile]    find the input target
+  python inside_track_bot.py tune [profile]       ~1 min check that the
+                                                  active timing profile
+                                                  walks lanes correctly
   python inside_track_bot.py budget               cycle-time / $-per-hour model
   python inside_track_bot.py [run] [profile]      run the bot
 
@@ -131,34 +142,73 @@ INPUT_MODE = "postmessage"   # "postmessage" | "gamepad" | "keyboard"
 # that responds, put its 1-based index from keytest's listing here.
 POST_TARGET_INDEX = None
 
-# "safe" is the original conservative pacing; it cannot reach his race rate.
-# "fast" trims the gaps that are pure overhead. Start on "safe", confirm the
-# navigation never desyncs, then move to "fast" and watch the achieved
-# races/hour the run loop prints.
-TIMING_PROFILE = "fast"
+# WHERE PRESSES ACTUALLY GET LOST
+# Measured on this setup with `tune`: a repeated press inside one region is
+# cheap and robust. A 5-lane walk landed 5/5 lanes on every combination
+# tried, down to a 20ms hold and a 120ms press-to-press cycle. Hold length
+# is simply not the lever it looks like.
+#
+# What does drop is the press that CROSSES A BOUNDARY, because the UI is
+# animating when the next press arrives:
+#   * nothing selected -> Left brings the cursor in at lane 6
+#   * Cross selects the horse and the right-hand bet panel redraws
+#   * Right moves from the horse column into that bet column
+# Those three get `transition_gap`; everything else gets `menu_tap_gap`.
+# Slowing every press to cover them is what made the old profile so slow.
+#
+# `race_wait` is gone: the bot now watches the picture and continues when the
+# race animation stops moving, so it neither guesses nor over-waits.
+TIMING_PROFILE = "steady"
 
 TIMINGS = {
-    "safe": {
-        "menu_tap_gap": (0.30, 0.45),   # between navigation presses
+    "safe": {                           # the original values; never drops
+        "menu_tap_gap": (0.30, 0.45),   # between presses inside one region
+        "transition_gap": (0.60, 0.80),  # after a press that changes region
         "bet_tap_gap": (0.03, 0.07),    # between bet-increase taps
         "key_hold": (0.07, 0.12),       # how long each key is held
         "spam_hold": (0.07, 0.12),      # hold during the bet-increase spam
-        "race_wait": 34.0,              # bet placed -> result dismissable
+        "race_wait_min": 26.0,          # never look before this
+        "race_wait_max": 46.0,          # give up waiting for stillness here
         "ocr_settle": 1.0,
         "hesitate_chance": 0.2,         # occasional extra 0-0.5s nav pause
         "double_read": True,            # always read the board twice
     },
-    "fast": {
-        "menu_tap_gap": (0.10, 0.15),
-        "bet_tap_gap": (0.012, 0.022),
-        "key_hold": (0.030, 0.045),
-        "spam_hold": (0.018, 0.028),
-        "race_wait": 31.5,
-        "ocr_settle": 0.35,
+    "steady": {                         # default
+        "menu_tap_gap": (0.15, 0.21),
+        "transition_gap": (0.50, 0.70),
+        "bet_tap_gap": (0.055, 0.075),
+        "key_hold": (0.060, 0.090),
+        "spam_hold": (0.055, 0.075),
+        "race_wait_min": 26.0,
+        "race_wait_max": 44.0,
+        "ocr_settle": 0.5,
         "hesitate_chance": 0.0,
         "double_read": False,           # second read only if the first is weak
     },
+    "fast": {                           # only after `tune` clears it
+        "menu_tap_gap": (0.11, 0.15),
+        "transition_gap": (0.38, 0.52),
+        "bet_tap_gap": (0.040, 0.055),
+        "key_hold": (0.045, 0.065),
+        "spam_hold": (0.040, 0.055),
+        "race_wait_min": 25.0,
+        "race_wait_max": 46.0,   # a cap, not a speed knob: only a long race
+                                 # ever reaches it, so trimming it just meant
+                                 # walking off the result screen mid-animation
+        "ocr_settle": 0.35,
+        "hesitate_chance": 0.0,
+        "double_read": False,
+    },
 }
+
+# The bet-increase is 27+ presses of the same button, which is most of the
+# non-race time. "hold" tries a single long press and lets the menu's own
+# auto-repeat ramp the amount -- far fewer chances to drop an input, and
+# verify_max_amount() checks the result either way, so trying it is cheap.
+# Switch to "hold", watch the log for the amount it reaches, keep whichever
+# reliably hits $10,000.
+BET_INCREASE_MODE = "tap"       # "tap" | "hold"
+BET_HOLD_SECONDS = 3.0
 
 
 def T():
@@ -561,6 +611,99 @@ def tap(key):
     time.sleep(_gap(T()["menu_tap_gap"]))
 
 
+def tap_edge(key):
+    """A press that moves between regions of the menu -- the cursor coming in
+    at lane 6, the horse being selected, the jump across to the bet column.
+    The UI animates through those, and a press arriving mid-animation is
+    swallowed, which desyncs everything after it. Give them room."""
+    if DRY_RUN:
+        return
+    _press(key)
+    time.sleep(_gap(T()["transition_gap"]))
+
+
+_change_thr = None
+
+
+def change_threshold():
+    """How big a frame-to-frame difference counts as 'the UI reacted'.
+    Measured once against the idle stream (the menus animate, so this is not
+    zero) and cached."""
+    global _change_thr
+    if _change_thr is None:
+        a = _frame()
+        ds = []
+        for _ in range(6):
+            time.sleep(0.15)
+            b = _frame()
+            ds.append(float(np.abs(b - a).mean()))
+            a = b
+        # Capped: if this happens to be measured mid-animation the bar could
+        # end up so high that nothing ever counts as a change. A real screen
+        # change measures ~40 on this setup, so 12 leaves plenty of headroom.
+        _change_thr = min(max(max(ds) * 4, sum(ds) / len(ds) + 1.5, 2.0), 12.0)
+        print(f"  (screen-change threshold {_change_thr:.2f})")
+    return _change_thr
+
+
+def wait_still(timeout=3.0, samples=2, gap=0.14):
+    """Block until the picture stops changing, or give up after `timeout`.
+    Returns whether it actually went still.
+
+    This is the precondition for measuring a press by whether the screen
+    changed: while something is animating, *every* frame differs from every
+    other one, so a confirm taken mid-animation passes whether or not the
+    press landed."""
+    thr = change_threshold()
+    t0 = time.time()
+    prev = _frame()
+    still = 0
+    while time.time() - t0 < timeout:
+        time.sleep(gap)
+        cur = _frame()
+        if _changed(prev, cur, thr):
+            still = 0
+        else:
+            still += 1
+            if still >= samples:
+                return True
+        prev = cur
+    return False
+
+
+def tap_confirm(key, tries=3, timeout=2.0, settle=3.0):
+    """A press that must land, for the ones that change the whole screen.
+    Waits for the picture to be still, presses, waits for it to actually
+    change, and presses again if it did not. This is what stops the bot
+    sitting on Place Bet forever because one Cross was swallowed.
+
+    The settle wait is what makes the confirm mean anything: arriving at the
+    result screen while it was still animating, the old version saw motion it
+    had not caused, called the press confirmed, and moved on with BET AGAIN
+    never actually pressed. The change also has to survive the transition
+    gap, so a one-frame flicker does not read as a new screen.
+
+    Returns whether it got through."""
+    if DRY_RUN:
+        return True
+    thr = change_threshold()
+    for attempt in range(tries):
+        if settle:
+            wait_still(timeout=settle)
+        base = _frame()
+        _press(key)
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            time.sleep(0.12)
+            if _changed(base, _frame(), thr):
+                time.sleep(_gap(T()["transition_gap"]))
+                if _changed(base, _frame(), thr):
+                    return True
+                break        # a blip, not a screen change -- press again
+        print(f"  ({key} did not register, retry {attempt + 2}/{tries})")
+    return False
+
+
 def tap_fast(key):
     """Rapid tap for the bet-increase spam: no hesitation, tight jitter."""
     if DRY_RUN:
@@ -599,12 +742,17 @@ def enter_single_event():
     """From the machine's start screen: Right hovers 'Place Bet on Single
     Event', X opens it."""
     tap("right")
-    tap("cross")
+    return tap_confirm("cross")      # whole screen changes; verified
 
 
 def spam_increase(n):
-    for _ in range(n):
-        tap_fast("cross")
+    if DRY_RUN:
+        return
+    if BET_INCREASE_MODE == "hold":
+        _press("cross", hold=BET_HOLD_SECONDS)   # one press, menu auto-repeats
+    else:
+        for _ in range(n):
+            tap_fast("cross")
     time.sleep(0.3)   # let the displayed amount settle before any read
 
 
@@ -636,27 +784,95 @@ def place_bet(lane, max_bet):
     cursor in at lane 6; Up walks 6 -> 1; X selects the horse. Navigate to
     the decrease-bet button (lane-dependent, see UPS_TO_DECREASE). Max bet:
     Right -> increase, X-taps to $10,000 (OCR-verified), Down -> Place Bet.
-    Min bet: Down goes straight from decrease to Place Bet."""
-    tap("left")                      # cursor appears on lane 6
+    Min bet: Down goes straight from decrease to Place Bet.
+
+    The tap_edge() calls are the region crossings that eat presses; the Up
+    walk between them is a plain tap and can stay quick. Returns whether the
+    bet actually went on."""
+    tap_edge("left")                 # nothing selected -> cursor in at lane 6
     for _ in range(6 - lane):
-        tap("up")
-    tap("cross")                     # select horse
-    tap("right")
+        tap("up")                    # walking within the lane list
+    tap_edge("cross")                # select horse; bet panel redraws
+    tap_edge("right")                # horse column -> bet column
     for _ in range(UPS_TO_DECREASE[lane]):
         tap("up")                    # -> decrease-bet button
     if max_bet:
         tap("right")                 # -> increase-bet button
         spam_increase(MAX_BET_PRESSES)
         verify_max_amount()
-    tap("down")                      # -> Place Bet
-    tap("cross")                     # place bet; race starts
+    tap_edge("down")                 # bet row -> Place Bet: a region change,
+                                     # so the Cross after it needs the room
+    return tap_confirm("cross")      # place bet; verified, race starts
 
 
 def return_to_start():
-    """After the race result: Down then X selects 'bet again', returning
-    to the machine start screen."""
-    tap("down")
-    tap("cross")
+    """After the race result: Down then X selects 'BET AGAIN', returning to
+    the machine start screen.
+
+    The result screen is usually still animating when the race wait ends, and
+    a press arriving mid-animation is swallowed -- which is how a cycle ends
+    with the bot parked on the result screen instead of betting again. So the
+    screen is allowed to settle first, generously, and the Cross is confirmed
+    against a still picture. No extra Downs on the retries: the highlight is
+    already in the button row and walking it again risks moving off BET
+    AGAIN. Returns whether it got back."""
+    if DRY_RUN:
+        return True
+    wait_still(timeout=10.0, samples=3)   # result screen finishes animating
+    tap_edge("down")                 # highlight moves into the button row
+    return tap_confirm("cross", tries=4)
+
+
+def wait_for_race_end():
+    """Replaces the fixed race_wait. Watches the picture and returns once the
+    race animation has stopped moving, so a slow race is waited out and a
+    quick one is not sat through. Returns (seconds spent, whether it really
+    went still rather than hitting the cap)."""
+    t = T()
+    t0 = time.time()
+    if DRY_RUN:
+        return 0.0, True
+    time.sleep(t["race_wait_min"])
+    thr = change_threshold()
+    prev = _frame()
+    peak = 0.0
+    still = 0
+    settled = False
+    while time.time() - t0 < t["race_wait_max"]:
+        time.sleep(0.35)
+        cur = _frame()
+        d = float(np.abs(cur - prev).mean())
+        prev = cur
+        peak = max(peak, d)
+        # "settled" = well below whatever motion this race actually showed,
+        # so it adapts to how busy the result screen is -- but never above a
+        # floor tied to the measured idle noise, because a camera cut or a
+        # long straight can be quiet in relative terms while the race runs on.
+        if d < max(thr * 2.0, peak * 0.12):
+            still += 1
+            if still >= 5:        # ~1.8s of quiet, not a one-second lull
+                settled = True
+                break
+        else:
+            still = 0
+    return time.time() - t0, settled
+
+
+def back_out():
+    """Circle out of whatever screen we are on, back to the machine's start
+    screen."""
+    for _ in range(3):
+        tap_edge("circle")
+    time.sleep(1.0)
+
+
+def recover():
+    """Called when the board cannot be read. Rather than pressing on blind --
+    which is how a desync turns into a bet on the wrong horse -- back out to
+    a known screen and come in again."""
+    print("  recovering: backing out to the machine start screen")
+    back_out()
+    enter_single_event()
 
 
 def ensure_window():
@@ -744,7 +960,7 @@ def run():
         enter_single_event()          # no-op in DRY_RUN
 
         lane = max_bet = None
-        for attempt in range(3):
+        for attempt in range(4):
             time.sleep(T()["ocr_settle"])
             odds, trusted = read_board_verified()
             lane, max_bet, reason = decide(odds)
@@ -752,22 +968,41 @@ def run():
                   f"trusted={trusted} -> {reason}")
             if lane is not None and trusted:
                 break
-            print("  bad/untrusted read; retrying")
             lane = None
+            # A trusted read is also the proof we are on the betting board at
+            # all. Two failures in a row means we are probably somewhere else.
+            if attempt == 1:
+                recover()
+            else:
+                print("  bad/untrusted read; retrying")
         if lane is None:
-            lane, max_bet = SKIP_LANE, False
-            print("  board unreadable after 3 tries -> min-bet skip to cycle it")
+            print("  board still unreadable -> skipping this cycle, "
+                  "no bet placed")
+            recover()
+            continue
 
-        place_bet(lane, max_bet)
+        if not place_bet(lane, max_bet):
+            print("  Place Bet never registered -> recovering, no race counted")
+            recover()
+            continue
         races += 1
         staked += MAX_BET if max_bet else MIN_BET
-        time.sleep(T()["race_wait"])
-        return_to_start()
+        raced, settled = wait_for_race_end()
+        if not settled:
+            print(f"  (race screen never went still within {raced:.0f}s -- "
+                  "pressing on)")
+        if not return_to_start():
+            # The result screen is still up and the next cycle would start
+            # from the wrong place. Circle out; the top of the loop comes
+            # back in through enter_single_event().
+            print("  BET AGAIN never registered -> backing out to the "
+                  "machine start screen")
+            back_out()
 
         cycle = time.time() - t_race
         rate = races / ((time.time() - t_start) / 3600)
         print(f"  bet {'MAX' if max_bet else f'${MIN_BET}'} on lane {lane} "
-              f"(race #{races})  cycle {cycle:.1f}s  "
+              f"(race #{races})  cycle {cycle:.1f}s (race {raced:.1f}s)  "
               f"rate {rate:.0f} races/h  ->  projected "
               f"${rate * (staked / races) * 0.506:,.0f}/h at +50.6% ROI")
 
@@ -779,28 +1014,38 @@ def budget():
     profit_per_race = 4917.0     # measured over his 547 races, see validate.py
     print(f"Cycle-time model for TIMING_PROFILE = {TIMING_PROFILE!r}\n")
     for name, t in TIMINGS.items():
-        nav_press = sum(t["key_hold"]) / 2
-        nav_gap = sum(t["menu_tap_gap"]) / 2 + t["hesitate_chance"] * 0.25
-        nav = nav_press + nav_gap
-        # enter(2) + left(1) + up(avg 3) + cross(1) + right(1) + ups(avg .5)
-        # + right(1) + down(1) + cross(1) + return_to_start(2)
-        nav_taps = 13.5
-        spam = MAX_BET_PRESSES * (sum(t["spam_hold"]) / 2
-                                  + sum(t["bet_tap_gap"]) / 2) + 0.3
-        boards = 2.0 if t["double_read"] else 1.25   # fast rechecks weak reads
+        hold = sum(t["key_hold"]) / 2
+        plain = hold + sum(t["menu_tap_gap"]) / 2 + t["hesitate_chance"] * 0.25
+        edge = hold + sum(t["transition_gap"]) / 2
+        # 8 region crossings: enter-cross, left, select-cross, right,
+        # down-to-place, place-cross, return down, return cross
+        # ~5.5 ordinary taps: enter-right, up walk (avg 3), ups (avg .5),
+        # right-to-increase
+        # +2.1s for the three tap_confirm() round trips: each settles the
+        # picture (~0.3s on a quiet menu) before pressing, then waits for the
+        # screen to react and re-checks that the change stuck
+        nav = 8 * edge + 5.5 * plain + 2.1
+        if BET_INCREASE_MODE == "hold":
+            spam = BET_HOLD_SECONDS + 0.3
+        else:
+            spam = MAX_BET_PRESSES * (sum(t["spam_hold"]) / 2
+                                      + sum(t["bet_tap_gap"]) / 2) + 0.3
+        boards = 2.0 if t["double_read"] else 1.25   # weak reads get a recheck
         ocr = t["ocr_settle"] + boards * 0.9 + 0.35   # 6 lanes + bet amount
-        total = nav_taps * nav + spam + ocr + t["race_wait"]
+        race = t["race_wait_min"] + 4.0   # +detection; measured live at runtime
+        total = nav + spam + ocr + race
         rate = 3600 / total
         mark = " <- active" if name == TIMING_PROFILE else ""
-        print(f"  {name:>5}: nav {nav_taps * nav:5.1f}s  betspam {spam:4.1f}s  "
-              f"ocr {ocr:4.1f}s  race {t['race_wait']:4.1f}s  "
+        print(f"  {name:>6}: nav {nav:5.1f}s  betspam {spam:4.1f}s  "
+              f"ocr {ocr:4.1f}s  race ~{race:4.1f}s  "
               f"= {total:5.1f}s/race -> {rate:5.1f} races/h "
               f"-> ${rate * profit_per_race:>9,.0f}/h{mark}")
-    print("\n  His claim: 103 races/h ($506k/h). race_wait is the floor -- "
-          "everything else is overhead worth trimming.")
-    print("  The run loop prints the achieved rate each race; if it is far "
-          "below this model, lower race_wait until 'bad/untrusted read' "
-          "starts appearing, then add a second back.")
+    print("\n  His claim: 103 races/h ($506k/h). The race itself is the floor")
+    print("  and is now measured rather than guessed -- the loop watches for")
+    print("  the animation to stop instead of sleeping a fixed time, so the")
+    print("  'race' column above is an estimate and the log has the truth.")
+    print("  If the real cycle is much worse than this, the bet spam or a")
+    print("  transition_gap is where the time is going.")
 
 
 def keytest():
@@ -824,6 +1069,159 @@ def keytest():
     print("If none of them worked, chiaki-ng is not taking posted key "
           "messages on this build -- use INPUT_MODE = 'gamepad' and follow "
           "the isolation steps in README-fixes.md.")
+
+
+def _frame(scale=4):
+    """Small greyscale-ish snapshot of the whole window, cheap enough to poll."""
+    win = get_window()
+    s = _sct.grab({"left": win.left, "top": win.top,
+                   "width": win.width, "height": win.height})
+    img = Image.frombytes("RGB", s.size, s.rgb)
+    img = img.resize((img.width // scale, img.height // scale), Image.BILINEAR)
+    return np.asarray(img, dtype=np.int16)
+
+
+def _changed(a, b, threshold):
+    return float(np.abs(a - b).mean()) > threshold
+
+
+def tune():
+    """Quick confidence check on the ACTIVE timing profile (about a minute).
+
+    Park chiaki-ng on the SINGLE EVENT board with a horse highlighted. Only
+    Up/Down are sent -- no confirm, so no bet can be placed. It verifies the
+    two things that actually break: that a multi-lane walk lands where it was
+    aimed, and that a press arriving straight after a region change is not
+    swallowed. The window must be visible and unobscured; focus is not needed.
+
+    An earlier full sweep on this setup found hold length irrelevant (20ms
+    registered as reliably as 220ms) and a 5-lane walk correct at every cycle
+    down to 120ms, which is why this no longer sweeps them."""
+    PARK, AWAY = "up", "down"
+
+    print("TUNE -- put chiaki-ng on the SINGLE EVENT board with a horse")
+    print("highlighted. Only Up/Down are sent; no bet can be placed.")
+    print(f"Checking the {TIMING_PROFILE!r} profile. Starting in 5s...")
+    print()
+    time.sleep(5)
+
+    t = T()
+    hwnd = target_hwnd()
+
+    def press(key, hold=None):
+        hold = random.uniform(*t["key_hold"]) if hold is None else hold
+        if INPUT_MODE == "postmessage":
+            _post_key(hwnd, key, hold)
+        else:
+            _press(key, hold=hold)
+
+    def step(key, n, gap=None):
+        for _ in range(n):
+            press(key)
+            time.sleep(random.uniform(*t["menu_tap_gap"]) if gap is None else gap)
+
+    def park():
+        step(PARK, 7, gap=0.32)
+        time.sleep(0.45)
+
+    # noise floor
+    noise = []
+    a = _frame()
+    for _ in range(8):
+        time.sleep(0.15)
+        c = _frame()
+        noise.append(float(np.abs(c - a).mean()))
+        a = c
+    thr = max(max(noise) * 4, sum(noise) / len(noise) + 1.5)
+    print(f"  stream noise floor {sum(noise)/len(noise):.3f}"
+          f"  -> change threshold {thr:.3f}")
+
+    # is anything getting through at all, and how long does it take to show
+    park()
+    lat = []
+    for _ in range(3):
+        base = _frame()
+        t0 = time.time()
+        press(AWAY, 0.18)
+        while time.time() - t0 < 1.5:
+            if _changed(base, _frame(), thr):
+                lat.append(time.time() - t0)
+                break
+        time.sleep(0.4)
+        step(PARK, 1, gap=0.35)
+    if not lat:
+        print("  !! nothing is reaching chiaki-ng. Wrong screen, wrong window,")
+        print("     or the input mode is not working -- run keytest first.")
+        return
+    lat.sort()
+    print(f"  input->screen round trip: median {lat[len(lat)//2]*1000:.0f}ms")
+
+    # lane reference frames, so a walk can be scored against where it landed
+    refs = []
+    for n in range(6):
+        park()
+        step(AWAY, n, gap=0.38)
+        time.sleep(0.5)
+        refs.append(_frame())
+    sep = min(float(np.abs(refs[i] - refs[j]).mean())
+              for i in range(6) for j in range(i + 1, 6))
+    if sep < thr:
+        print(f"  !! lanes are not visually distinct (separation {sep:.3f}).")
+        print("     Is the window obscured, or is this the wrong screen?")
+        return
+
+    def landed():
+        cur = _frame()
+        return min(range(6), key=lambda i: float(np.abs(refs[i] - cur).mean()))
+
+    # 1. the lane walk at this profile's own pacing
+    print()
+    print(f"  5-lane walk at {TIMING_PROFILE!r} pacing "
+          f"(hold {t['key_hold'][0]*1000:.0f}-{t['key_hold'][1]*1000:.0f}ms, "
+          f"gap {t['menu_tap_gap'][0]*1000:.0f}-"
+          f"{t['menu_tap_gap'][1]*1000:.0f}ms):")
+    walk = []
+    for _ in range(4):
+        park()
+        time.sleep(0.4)
+        step(AWAY, 5)
+        time.sleep(0.5)
+        walk.append(landed())
+    print(f"    landed {walk}  (want [5, 5, 5, 5])   "
+          f"{'ok' if all(w == 5 for w in walk) else 'DROPPING PRESSES'}")
+
+    # 2. the press that arrives right after a region change -- the one the
+    #    lane walk depends on, and the failure this profile is shaped around
+    print()
+    print(f"  first press after a region change, at transition_gap "
+          f"{t['transition_gap'][0]*1000:.0f}-"
+          f"{t['transition_gap'][1]*1000:.0f}ms:")
+    for label, gap in (("menu_tap_gap  ", sum(t["menu_tap_gap"]) / 2),
+                       ("transition_gap", sum(t["transition_gap"]) / 2)):
+        hits = 0
+        for _ in range(4):
+            park()
+            time.sleep(0.4)
+            press(AWAY)               # the region-change press stand-in
+            time.sleep(gap)
+            base = _frame()
+            press(AWAY)               # the press that tends to get eaten
+            time.sleep(0.55)
+            hits += _changed(base, _frame(), thr)
+        print(f"    waiting {gap*1000:>4.0f}ms after it: {hits}/4 registered"
+              f"   {'ok' if hits == 4 else 'SWALLOWED'}")
+    park()
+
+    print()
+    print("  " + "-" * 62)
+    if all(w == 5 for w in walk):
+        print(f"  The {TIMING_PROFILE!r} profile walks lanes correctly here.")
+    else:
+        print(f"  The {TIMING_PROFILE!r} profile is dropping presses. Raise")
+        print("  menu_tap_gap first, then transition_gap, or fall back to")
+        print("  TIMING_PROFILE = 'safe'.")
+    print("  If the two rows above differ, that gap is what the three")
+    print("  tap_edge() calls in place_bet() exist to cover.")
 
 
 def calibrate():
@@ -875,16 +1273,35 @@ def read_once():
 
 if __name__ == "__main__":
     COMMANDS = {"run": run, "read": read_once, "calibrate": calibrate,
-                "probe": probe, "keytest": keytest, "budget": budget}
-    mode = "run"
+                "probe": probe, "keytest": keytest, "budget": budget,
+                "tune": tune}
+    # No default mode: a bare `python inside_track_bot.py` used to start
+    # betting real money, which is one stray Enter away from an accident.
+    if not sys.argv[1:]:
+        print(__doc__.split("COMMANDS")[1].split("SETUP")[0].strip())
+        print("\nName a command explicitly -- 'run' included.")
+        sys.exit(2)
+    mode = None
     for a in sys.argv[1:]:
+        flag = a.lstrip("-")
         if a in COMMANDS:
             mode = a
-        elif a in PROFILES:
+        elif a in PROFILES:            # screen profile: main / 4k
             PROFILE = a
+        elif flag in TIMINGS:          # timing profile: safe / steady / fast
+            TIMING_PROFILE = flag
+        elif flag in ("dry", "dry-run"):
+            DRY_RUN = True
+        elif flag in ("chart", "pickorder"):
+            STRATEGY = flag
         else:
-            print(f"Unknown argument {a!r} "
-                  f"(commands: {'/'.join(COMMANDS)}; profiles: "
-                  f"{', '.join(PROFILES)})")
+            print(f"Unknown argument {a!r}\n"
+                  f"  commands: {'/'.join(COMMANDS)}\n"
+                  f"  screens:  {'/'.join(PROFILES)}\n"
+                  f"  timing:   {'/'.join(TIMINGS)}\n"
+                  f"  other:    --dry, --chart, --pickorder")
             sys.exit(1)
+    if mode is None:
+        print(f"No command given (one of: {'/'.join(COMMANDS)}).")
+        sys.exit(2)
     COMMANDS[mode]()

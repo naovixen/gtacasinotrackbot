@@ -121,16 +121,122 @@ of the 28 bet-increase taps, a 1.0s OCR settle, and two full six-lane board
 reads every race.
 
 **Changes:**
-- `TIMING_PROFILE` with `safe` (the old values) and `fast`, defaulting to `fast`.
+- `TIMING_PROFILE` with `safe` (the old values), `steady` (default) and `fast`.
 - The second board read is now only spent when the first read is incomplete
   or below the confidence bar, instead of every race.
 - The run loop prints the achieved cycle time, races/hour and projected $/h
   after each race, so you can tune against reality instead of the model.
-- `python inside_track_bot.py budget` shows the model for both profiles.
+- `python inside_track_bot.py budget` shows the model for all three profiles.
 
-`race_wait` (31.5s) is the floor and the one value I could not measure
-without the game in front of me. Lower it a second at a time until
-`bad/untrusted read` starts showing up in the log, then add one back.
+### Where presses were actually getting lost
+
+My first cut at this was wrong. I assumed short key holds were being dropped
+because chiaki samples controller state periodically, so I set the `fast`
+profile to a 30–45ms hold. That caused dropped navigation, but not for the
+reason I gave — and the fix was in the wrong place.
+
+Measured on your connection with `tune`, driving the real lane list:
+
+```
+  20ms hold: 6/6 registered      120ms cycle: [5,5,5,5] lanes    ok
+  30ms hold: 6/6 registered      150ms cycle: [5,5,5,5] lanes    ok
+ 220ms hold: 6/6 registered      600ms cycle: [5,5,5,5] lanes    ok
+```
+
+A 5-lane walk landed correctly at **every** combination tried, down to a 20ms
+hold and a 120ms press-to-press cycle. Hold length is irrelevant here, and
+repeated presses inside one region are robust. Round-trip latency
+(post → PS5 → stream → screen) measured a stable **282ms**.
+
+What actually drops is the press that **crosses a boundary**, while the UI is
+still animating:
+
+- nothing selected → `Left` brings the cursor in at lane 6
+- `Cross` selects the horse and the right-hand bet panel redraws
+- `Right` jumps from the horse column into that bet column
+
+Those three now use `tap_edge()` and a separate `transition_gap`
+(0.50–0.70s on `steady`); the lane walk between them stays on the quick
+`menu_tap_gap`. Slowing *every* press to cover three of them is what made the
+original profile take 48s a race.
+
+The other regression was mine: the `fast` bet spam ran at a 30–50ms cycle,
+three times faster than anything that has been shown to work. It is now
+0.10–0.13s per tap.
+
+### The Place Bet hang
+
+First version of the above got one boundary wrong and `fast` would sit
+hovering on Place Bet. `tap_edge()` puts its long gap *after* a press, which
+is right when that press is the one starting an animation — but the Cross on
+Place Bet needs the room *before* it, because the preceding `Down` is what
+moves the highlight into the button row. That Down was a plain tap, so the
+Cross arrived ~110ms later and was swallowed. It is now `tap_edge("down")`.
+
+Guessing every boundary correctly is fragile, so the presses that change the
+whole screen no longer rely on it. `tap_confirm()` presses, watches for the
+picture to actually change, and presses again if it did not — up to three
+times. It is used for entering the single-event screen, placing the bet, and
+BET AGAIN. `place_bet()` now returns whether the bet went on; if it did not,
+the loop recovers rather than counting a race that never ran.
+
+The threshold for "the screen reacted" is measured once against your idle
+stream (the menus animate, so it isn't zero) and capped. On this setup it
+came out at 2.19, against ~43 for a real screen change — a 20× margin.
+
+### The race wait is no longer a guess
+
+`race_wait` is gone. `wait_for_race_end()` sleeps a minimum, then watches the
+picture and continues once the animation stops moving — measured against how
+much motion *that* race actually showed, with a hard cap. So a slow race is
+waited out and a quick one isn't sat through, and the log prints the real
+race duration each cycle.
+
+### It gets back to BET AGAIN (the `fast` stall)
+
+On `fast` the loop could finish a race and never restart: the result screen
+came up, and the bot sat on it instead of pressing BET AGAIN. Three things
+lined up, all of them still latent on the slower profiles:
+
+1. **`tap_confirm()` confirmed presses it had not made.** It pressed, then
+   watched for the picture to change. On the *result* screen the picture is
+   changing anyway — the payout counts up, horses mill around — so the very
+   first frame after the press differed from the baseline and the confirm
+   passed with the Cross swallowed. It now waits for the picture to be
+   **still** before it presses, so the change it measures is one it caused,
+   and re-checks after the transition gap that the change stuck rather than
+   being a one-frame flicker.
+
+2. **`wait_for_race_end()` could return mid-race.** "Settled" was purely
+   relative — below 25% of the motion that race had shown — so a camera cut
+   or a quiet straight cleared it after three samples (~1s). It now needs
+   five consecutive quiet samples (~1.8s) *and* absolute quiet measured
+   against the same idle-noise threshold the confirms use. `fast` also had
+   `race_wait_max` trimmed to 42s, which on a long race simply walked off the
+   still-running screen; it is back to 46s. That cap is a safety net, not a
+   speed knob — only a long race ever reaches it.
+
+3. **Nothing checked whether it worked.** `return_to_start()` already
+   returned a status and `run()` threw it away. Now: the result screen is
+   given up to 10s to settle, the Cross gets four confirmed attempts (with no
+   extra `Down`s, which would walk the highlight *off* BET AGAIN), and if it
+   still fails the loop backs out with Circle so the next cycle starts from
+   the machine start screen instead of somewhere unknown.
+
+The cycle cost of the settle waits is ~0.9s a race, which `budget` now
+accounts for.
+
+### It no longer bets blind when it's lost
+
+A trusted board read is also the proof that you're on the betting screen. If
+two reads in a row fail, `recover()` backs out to the machine start screen and
+comes in again, instead of the old behaviour of pressing on and placing a
+"min-bet skip" from an unknown screen — which is how one dropped press turned
+into a bet on the wrong horse.
+
+`python inside_track_bot.py tune` is now a ~1 minute check that the active
+profile walks lanes correctly and that the post-transition press survives,
+rather than the long sweep it started as.
 
 ---
 
@@ -255,7 +361,22 @@ python validate.py                       # full report (~30s)
 python validate.py --quick               # skip bootstrap + cross-validation
 python inside_track_bot.py budget        # cycle-time / $-per-hour model
 python inside_track_bot.py keytest       # find the input target window
+python inside_track_bot.py tune          # ~1 min timing check
+python inside_track_bot.py run fast      # run at the fast timing profile
 ```
+
+Any command takes these in any order — no editing the file:
+
+| argument | effect |
+|---|---|
+| `main` / `4k` | which screen profile's coordinates to use |
+| `safe` / `steady` / `fast` | timing profile (default `steady`) |
+| `--dry` | decide and log, send no input |
+| `--chart` / `--pickorder` | override the strategy for this run |
+
+So `python inside_track_bot.py run fast`, or
+`python inside_track_bot.py run 4k fast --dry` to rehearse it first. The
+preflight banner prints which of each is active before the first bet.
 
 ---
 
@@ -278,11 +399,17 @@ the red boxes have drifted.
    menu while another window has focus. (Already verified once above.)
 2. `python inside_track_bot.py probe` — confirm the OCR boxes still sit on
    the odds for your profile. **Do this one — see above.**
-3. Set `DRY_RUN = True`, `TIMING_PROFILE = "safe"`, run a few minutes and
-   check the decisions in the log read sensibly.
-4. `DRY_RUN = False`, still on `safe`, watch that navigation never desyncs.
-5. Switch to `fast` and watch the printed races/hour. Tune `race_wait` down
-   until reads start failing, then back off one second.
+3. `python inside_track_bot.py tune` — a minute, on the SINGLE EVENT board.
+   Confirms the active profile walks lanes without dropping presses.
+4. Set `DRY_RUN = True`, run a few minutes and check the decisions in the log
+   read sensibly.
+5. `DRY_RUN = False` on `steady` (the default), watch that navigation never
+   desyncs. If it does, raise `menu_tap_gap` first, then `transition_gap`.
+6. Only then try `fast`, and watch the printed races/hour.
+
+A bare `python inside_track_bot.py` no longer starts betting — it prints the
+command list and exits. It used to default to `run`, which is one stray Enter
+away from an accident.
 
 Standing caveat: this is automating a live GTA Online money faucet. Rockstar
 bans for it. Nothing here changes that.
