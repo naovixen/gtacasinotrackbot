@@ -121,12 +121,15 @@ of the 28 bet-increase taps, a 1.0s OCR settle, and two full six-lane board
 reads every race.
 
 **Changes:**
-- `TIMING_PROFILE` with `safe` (the old values), `steady` (default) and `fast`.
+- `TIMING_PROFILE` with `safe` (the old values), `steady` (default) and
+  `fast`. *(Superseded — see "The profiles are gone" below: there is now one
+  set of numbers, no profile to choose.)*
 - The second board read is now only spent when the first read is incomplete
   or below the confidence bar, instead of every race.
 - The run loop prints the achieved cycle time, races/hour and projected $/h
   after each race, so you can tune against reality instead of the model.
-- `python inside_track_bot.py budget` shows the model for all three profiles.
+- `python inside_track_bot.py budget` models the cycle time for those
+  numbers in races/hour and $/hour.
 
 ### Where presses were actually getting lost
 
@@ -155,14 +158,84 @@ still animating:
 - `Cross` selects the horse and the right-hand bet panel redraws
 - `Right` jumps from the horse column into that bet column
 
-Those three now use `tap_edge()` and a separate `transition_gap`
-(0.50–0.70s on `steady`); the lane walk between them stays on the quick
-`menu_tap_gap`. Slowing *every* press to cover three of them is what made the
-original profile take 48s a race.
+Those three now use `tap_edge()` and a separate `transition_gap` (0.46–0.60s),
+while the lane walk between them stays on the quick `menu_tap_gap` (0.13–0.17s).
+Slowing *every* press to cover three of them is what made the original profile
+take 48s a race.
 
 The other regression was mine: the `fast` bet spam ran at a 30–50ms cycle,
 three times faster than anything that has been shown to work. It is now
-0.10–0.13s per tap.
+~0.11s per tap, and `verify_max_amount()` reads the amount back off the screen
+either way.
+
+### The profiles are gone; there is one set of numbers
+
+`safe` / `steady` / `fast` were three guesses, and choosing between them was a
+coin toss made once and never revisited. `TIMING`, near the top of the file, is
+now the only set.
+
+| | safe (old) | fast (old) | now |
+|---|---|---|---|
+| `menu_tap_gap` | 0.30–0.45s | 0.11–0.15s | **0.065–0.085s** |
+| `transition_gap` | 0.60–0.80s | 0.38–0.52s | **0.31–0.40s** |
+| `key_hold` | 0.07–0.12s | 0.045–0.065s | **0.050–0.070s** |
+| `spam_hold` + `bet_tap_gap` | ~0.15s/tap | ~0.095s/tap | **~0.086s/tap** |
+| `ocr_settle` | 1.0s | 0.35s | **0.42s** |
+
+That models at **39.8s a race, 90 races/h, ~$445k/h** (`budget`), against 48.5s
+and 74 races/h on the old `safe` numbers — within touching distance of his
+claimed 103.
+
+They are trimmed past what has been measured, deliberately, and the file records
+where each one stands:
+
+- **Lane walk: inside the evidence.** `key_hold` + `menu_tap_gap` is ~135ms
+  press-to-press, and a 5-lane walk landed 5/5 at a 120ms cycle.
+- **Crossing: thin.** The press goes in ~355ms after the one that started the
+  animation, against a 282ms measured round trip. Three of the eight crossings
+  are confirmed against the picture and retry; the other five are not, and a
+  swallowed press there desyncs the rest of the sequence.
+- **Bet spam: just under it.** ~86ms a tap, against the ~0.11s shown to reach
+  $10,000 and the 30–50ms found to drop taps — much nearer the first than the
+  second. It also fails cheaply: `verify_max_amount()` reads the amount back off
+  the screen and tops it up, so the cost is seconds rather than a wrong stake.
+
+The log says which one gave way first: `(cross did not register, retry 2/3)` for
+a crossing, `(amount $X: some taps eaten)` for the spam. Give ground in that
+order — `transition_gap`, then `menu_tap_gap`.
+
+`python inside_track_bot.py tune` still checks them against the real lane list
+in about a minute, and if navigation desyncs the knob to raise is
+`transition_gap` first, then `menu_tap_gap`.
+
+#### Why they are not measured automatically
+
+The obvious next step was a probe that ramps each part of the cycle until it
+breaks and keeps the last speed that held — separately per part, since a lane
+walk survives gaps less than half of what a region crossing needs. It was
+built, it worked against a simulated menu, and it does not work here. It has to
+score each trial by looking at the screen, and on this stream the frame-to-frame
+difference while *nothing is happening* measured **larger than the difference
+between one highlighted lane and the next** (noise floor 98 against a
+separation of 60). Averaged over the window, a highlight moving between two
+adjacent buttons in the bet row is an order of magnitude below the noise it is
+being compared against; measured tile by tile to get around that, the noise
+comes up with it.
+
+There is nothing to measure against, so the numbers above are chosen inside the
+bands `tune` has already validated rather than derived. Two things worth keeping
+from the attempt:
+
+- **Never count presses backwards out of the menu.** The probe pressed Circle
+  three times to reach the machine's start screen from the board. That is one
+  press too many — the second Circle leaves the terminal, and every press after
+  it goes into the game world. `back_out()` had the same bug, so `recover()`
+  could have walked out of the machine mid-session; it now stops as soon as it
+  recognises the start screen, which `enter_single_event()` remembers on the way
+  in.
+- **A bet-spam check that does not rely on pixels.** Before spamming X, confirm
+  the button by *using* it: one press, and the amount has to go up by the right
+  step. Being wrong about which button that is would be twenty real bets.
 
 ### The Place Bet hang
 
@@ -234,9 +307,9 @@ comes in again, instead of the old behaviour of pressing on and placing a
 "min-bet skip" from an unknown screen — which is how one dropped press turned
 into a bet on the wrong horse.
 
-`python inside_track_bot.py tune` is now a ~1 minute check that the active
-profile walks lanes correctly and that the post-transition press survives,
-rather than the long sweep it started as.
+`python inside_track_bot.py tune` is now a ~1 minute check that the timings
+walk lanes correctly and that the post-transition press survives, rather than
+the long sweep it started as.
 
 ---
 
@@ -346,11 +419,109 @@ into the focused window. Don't use it if you want the PC.
 
 ---
 
+## Part 3 — Our own record (`race_log.csv`)
+
+Every ROI figure in Part 1 is fitted to **his** 547 races. The bot now keeps
+its own book so we can stop taking his word for it.
+
+### How a race gets graded
+
+One box on the result screen, read after `wait_for_race_end()` and **before**
+anything is pressed — once BET AGAIN goes in, it's gone:
+
+```python
+"win_lane_region": (1405, 785, 80, 90),   # 4k profile
+```
+
+The number of the horse that won is the entire result. It grades *every*
+race, including the ~50% we lose, which the payout never could — and combined
+with the whole board in `odds1…odds6`, a losing race stops being a blank and
+becomes a full observation: which price won, out of which six were on offer.
+
+**The amount-won box isn't read at all.** Inside Track pays `(odds + 1) ×
+stake`, so once we know the board and the winning lane the payout is
+arithmetic, not something to OCR: `grade()` computes it. That's one fewer OCR
+pass per race and one fewer box to keep calibrated.
+
+The read waits for two consecutive agreeing OCR passes, so it isn't caught
+mid-animation, and it's a cheap one — a single digit, allowlist `123456`.
+Text it can't resolve (nothing, or more than one digit) is logged **blank**,
+never as a loss: a missed read and a losing bet are very different things
+once you start fitting numbers to this.
+
+### What gets written
+
+One row per placed bet, appended to `race_log.csv` next to the script. Rows
+are only ever appended and each run stamps its own `run_id`, so a new session
+never overwrites an old one. If the columns ever change, the old file is
+renamed to `race_log.<run_id>.old.csv` rather than being appended to with a
+mismatched header.
+
+| column | what |
+|---|---|
+| `run_id`, `ts` | which session, and when |
+| `profile`, `strategy`, `timing`, `dry` | the conditions the bet was placed under |
+| `odds1`…`odds6` | the whole board, not just the horse we backed |
+| `lane`, `horse`, `max_bet`, `reason` | what we bet and why `decide()` said so |
+| `stake` | read back off the screen, so it's what was really bet, not what was intended |
+| `win_lane`, `win_odds` | which lane won, and the price that horse was at |
+| `won`, `payout`, `profit` | did we win, and the money — computed from the odds and the winning lane |
+| `trusted`, `race_s`, `cycle_s`, `settled` | OCR confidence and timing, for debugging bad rows |
+
+Keeping the full board matters: it's what lets us ask later whether backing
+4/1 over 3/1 was right *on the boards we actually saw*, rather than re-testing
+the pick order on the same data it came from.
+
+### Reading it back
+
+```
+python inside_track_bot.py stats
+```
+
+Breaks the log down by horse backed (with the break-even win rate for each
+price), by lane, and by bet size, plus the last 50 races so drift shows up.
+
+Then the table the whole thing is for — **what actually wins**, over every
+race, whatever we bet:
+
+```
+    price    appeared   won  win rate  break-even  flat ROI
+    EVENS          72    17     23.6%       50.0%    -52.8%
+    2/1           139    31     22.3%       33.3%    -33.1%
+    4/1           138    26     18.8%       20.0%     -5.8%
+```
+
+That is the same measurement `validate.py` runs over his 547 races — flat-bet
+ROI for backing a price every time it appears — computed on boards we read
+ourselves. `PICK_ORDER` is currently `[1, 2, 4, 3, 5]` on his numbers; this
+column is what eventually replaces it.
+
+### Calibrating the box
+
+`probe` draws the win-lane box in yellow alongside the red odds boxes, so run
+it on a **result** screen as well as on the betting board:
+
+```
+python inside_track_bot.py probe 4k
+python inside_track_bot.py result 4k
+```
+
+`result` reads the result screen once and prints the lane it got. Do it on a
+winning result screen and on a losing one — if the digit doesn't come through
+on both, races land in the log ungraded and everything downstream is built on
+a biased sample.
+
+The `main` profile has no `win_lane_region` measured yet, so runs on that
+screen log races without results and say so at startup.
+
+---
+
 ## Files
 
 | file | what |
 |---|---|
 | `inside_track_bot.py` | the bot |
+| `race_log.csv` | our own race-by-race record, appended forever (Part 3) |
 | `inside_track_bot.py.bak` | the previous version, for diffing |
 | `parse_races.py` | parses the Reddit race logs |
 | `validate.py` | reproduces every number in this document |
@@ -362,7 +533,9 @@ python validate.py --quick               # skip bootstrap + cross-validation
 python inside_track_bot.py budget        # cycle-time / $-per-hour model
 python inside_track_bot.py keytest       # find the input target window
 python inside_track_bot.py tune          # ~1 min timing check
-python inside_track_bot.py run fast      # run at the fast timing profile
+python inside_track_bot.py probe 4k      # probe.png with the OCR boxes drawn on
+python inside_track_bot.py result 4k     # check the winning-lane OCR box
+python inside_track_bot.py stats         # what OUR bets have returned
 ```
 
 Any command takes these in any order — no editing the file:
@@ -370,13 +543,13 @@ Any command takes these in any order — no editing the file:
 | argument | effect |
 |---|---|
 | `main` / `4k` | which screen profile's coordinates to use |
-| `safe` / `steady` / `fast` | timing profile (default `steady`) |
 | `--dry` | decide and log, send no input |
 | `--chart` / `--pickorder` | override the strategy for this run |
 
-So `python inside_track_bot.py run fast`, or
-`python inside_track_bot.py run 4k fast --dry` to rehearse it first. The
-preflight banner prints which of each is active before the first bet.
+So `python inside_track_bot.py run 4k`, or
+`python inside_track_bot.py run 4k --dry` to rehearse it first. The preflight
+banner prints the screen profile, the timings and the strategy before the first
+bet.
 
 ---
 
@@ -397,15 +570,23 @@ the red boxes have drifted.
 
 1. `python inside_track_bot.py keytest` — confirm postmessage drives the PS5
    menu while another window has focus. (Already verified once above.)
-2. `python inside_track_bot.py probe` — confirm the OCR boxes still sit on
-   the odds for your profile. **Do this one — see above.**
-3. `python inside_track_bot.py tune` — a minute, on the SINGLE EVENT board.
-   Confirms the active profile walks lanes without dropping presses.
+2. `python inside_track_bot.py probe 4k` — confirm the OCR boxes still sit
+   on the odds for your profile. **Do this one — see above.**
+3. `python inside_track_bot.py tune 4k` — a minute, on the SINGLE EVENT board.
+   Confirms the timings walk lanes without dropping presses. Focus does not
+   matter — `postmessage` posts to the chiaki-ng window handle — but the window
+   must stay visible and unobscured, because everything is scored by reading
+   pixels.
 4. Set `DRY_RUN = True`, run a few minutes and check the decisions in the log
    read sensibly.
-5. `DRY_RUN = False` on `steady` (the default), watch that navigation never
-   desyncs. If it does, raise `menu_tap_gap` first, then `transition_gap`.
-6. Only then try `fast`, and watch the printed races/hour.
+5. `DRY_RUN = False`, watch that navigation never desyncs. If it does, raise
+   `transition_gap` in `TIMING` first, then `menu_tap_gap`.
+6. `python inside_track_bot.py result 4k` on a result screen — once after a
+   win, once after a loss. It must print the winning horse's number both
+   times, not "UNREADABLE".
+7. Watch the printed races/hour, and check `python inside_track_bot.py stats`
+   as the log fills up; a few hundred graded races are worth more than the
+   charts in Part 1.
 
 A bare `python inside_track_bot.py` no longer starts betting — it prints the
 command list and exits. It used to default to `run`, which is one stray Enter

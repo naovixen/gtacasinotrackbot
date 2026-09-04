@@ -48,24 +48,56 @@ SCREENS: coordinates live in PROFILES, one entry per monitor/layout,
 selected with a CLI arg. Calibrate once per profile and don't move or
 resize the window on that screen afterwards.
 
+TIMING: one set of numbers, in TIMING near the top of this file -- no profile to
+choose any more. They are trimmed past what has been measured on this
+connection; the comment above TIMING says exactly where each one stands against
+the evidence. `tune` checks them against the real lane list in a minute,
+`budget` models what they cost in races/hour, and if navigation desyncs the
+knob to raise is transition_gap, then menu_tap_gap.
+
 Any command also accepts, in any order:
   main | 4k               which screen profile's coordinates to use
-  fast | steady | safe    which timing profile to run at (default steady)
   --dry                   decide and log, send no input
   --chart | --pickorder   override the strategy for this run
-e.g.  python inside_track_bot.py run fast
-      python inside_track_bot.py run 4k fast --dry
+e.g.  python inside_track_bot.py run 4k
+      python inside_track_bot.py run 4k --dry
 
 COMMANDS
   python inside_track_bot.py calibrate [profile]  capture window -> calibrate.png
   python inside_track_bot.py probe [profile]      probe.png with boxes drawn
   python inside_track_bot.py read [profile]       one verified board read
+  python inside_track_bot.py result [profile]     read the result screen
+                                                  (checks the result boxes)
+  python inside_track_bot.py stats                what OUR bets have
+                                                  returned so far
   python inside_track_bot.py keytest [profile]    find the input target
   python inside_track_bot.py tune [profile]       ~1 min check that the
-                                                  active timing profile
-                                                  walks lanes correctly
+                                                  timings walk lanes
+                                                  correctly
   python inside_track_bot.py budget               cycle-time / $-per-hour model
   python inside_track_bot.py [run] [profile]      run the bot
+
+OUR OWN RECORD (race_log.csv)
+  The ROI numbers above are fitted to somebody else's 547 races. Every race
+  this bot runs is therefore appended to race_log.csv next to this script --
+  the whole board, which lane was backed and why, the stake read back off the
+  screen, and the one thing worth reading off the result screen before BET
+  AGAIN is pressed (it is gone once it is): win_lane_region, the number of
+  the horse that won.
+
+  That single number is the whole result. It grades the races we LOSE as
+  well, so with the full board in odds1..6 every race becomes a data point
+  about which PRICE wins rather than only about us; and the payout follows
+  from it by arithmetic -- stake x (odds + 1) when the winning lane is ours,
+  0 when it is not -- so there is nothing to gain from OCRing the amount-won
+  box as well.
+
+  Rows are only ever appended and each run tags its own with a run_id, so
+  nothing from a previous session is overwritten. `stats` reads it back: our
+  ROI by horse, lane and bet size, and -- the point of the exercise -- a
+  flat-bet ROI table for every price from the races themselves, which is
+  what PICK_ORDER should eventually be rebuilt from. Set for the '4k'
+  profile; measure the box off probe.png for any other screen.
 
 SETUP
   pip install mss pillow numpy easyocr pydirectinput pygetwindow vgamepad
@@ -76,12 +108,15 @@ SETUP
 NOTE: automation violates Rockstar's ToS; ban/wipe risk is real. Supervise.
 """
 
+import csv
 import ctypes
+import os
 import random
 import re
 import sys
 import time
 from ctypes import wintypes
+from datetime import datetime
 
 import mss
 import numpy as np
@@ -96,8 +131,10 @@ WINDOW_TITLE = "chiaki"
 
 # One profile per screen/layout. All boxes are (left, top, width, height)
 # relative to the WINDOW's top-left, measured on that profile's own
-# calibrate.png. bet_amount_region enables max-bet OCR verification
-# (None disables it).
+# calibrate.png. bet_amount_region enables max-bet OCR verification and
+# win_lane_region enables result tracking -- the number of the horse that won,
+# read off the result screen. Either can be None to disable that feature on a
+# profile that has not been measured for it yet.
 PROFILES = {
     "main": {   # ultrawide 1440p
         "odds_regions": [
@@ -109,6 +146,10 @@ PROFILES = {
             (246, 976, 88, 48),  # lane 6
         ],
         "bet_amount_region": (1315, 480, 140, 75),
+        # Not measured on this screen yet: run `probe main` on a result
+        # screen, read the box off probe.png, and put it here to start
+        # logging results from this profile too.
+        "win_lane_region": None,
     },
     "4k": {     # 4K side monitor
         "odds_regions": [
@@ -120,6 +161,13 @@ PROFILES = {
             (370, 1475, 135, 65),  # lane 6
         ],
         "bet_amount_region": (1985, 765, 220, 130),
+        # The lane of the horse that actually won: the one thing worth
+        # reading off the result screen. It grades every race, including the
+        # ~50% we lose -- which, combined with the full board in odds1..6,
+        # is what lets us refit the pick order on our own data. The payout
+        # box is not read at all: what it would have said is just
+        # stake x (odds + 1) when this lane is ours, and 0 when it is not.
+        "win_lane_region": (1405, 785, 80, 90),
     },
 }
 DEFAULT_PROFILE = "main"
@@ -158,48 +206,106 @@ POST_TARGET_INDEX = None
 #
 # `race_wait` is gone: the bot now watches the picture and continues when the
 # race animation stops moving, so it neither guesses nor over-waits.
-TIMING_PROFILE = "steady"
+# There is one set of numbers rather than a profile to pick between.
+# safe/steady/fast were three guesses, and choosing between them was a coin
+# toss made once and never revisited.
+#
+# These are trimmed deliberately hard: the crossing gap to two thirds, the lane
+# walk to half, the bet spam to three quarters. Where each one now sits against
+# what has actually been measured on this connection (see README-fixes.md):
+#
+#   lane walk    within it. A 5-lane walk landed 5/5 at a 120ms press-to-press
+#                cycle; key_hold + menu_tap_gap is ~135ms.
+#   crossing     thinner. The round trip post -> PS5 -> stream -> screen
+#                measured 282ms, and the press now goes in ~355ms after the one
+#                that started the animation. Three of the eight crossings are
+#                confirmed against the picture and will retry; the other five
+#                are not, and a swallowed one there desyncs the rest of the
+#                sequence.
+#   bet spam     just under it. ~86ms per tap, against the ~0.11s that has
+#                been shown to reach $10,000 and the 30-50ms that was found to
+#                drop taps -- much nearer the first than the second. It also
+#                fails cheaply: verify_max_amount() reads the amount back off
+#                the screen and tops it up, so the cost is seconds rather than
+#                a wrong stake.
+#
+# Watch the log for "(cross did not register, retry 2/3)" and "(amount $X: some
+# taps eaten)". Those are the early warning that a number went too far, and the
+# order to give ground in is transition_gap, then menu_tap_gap.
+#
+# Ranges are jittered per press, so the input is not perfectly metronomic, and
+# `variance` adds a further 0-50ms to every navigation gap on top of that, so
+# no two cycles run to the same clock. It only ever adds delay, so it cannot
+# push a gap under the band `tune` validated -- it costs about half a second a
+# race and buys a rhythm that never repeats.
+TIMING_NAME = "trimmed"
 
-TIMINGS = {
-    "safe": {                           # the original values; never drops
-        "menu_tap_gap": (0.30, 0.45),   # between presses inside one region
-        "transition_gap": (0.60, 0.80),  # after a press that changes region
-        "bet_tap_gap": (0.03, 0.07),    # between bet-increase taps
-        "key_hold": (0.07, 0.12),       # how long each key is held
-        "spam_hold": (0.07, 0.12),      # hold during the bet-increase spam
-        "race_wait_min": 26.0,          # never look before this
-        "race_wait_max": 46.0,          # give up waiting for stillness here
-        "ocr_settle": 1.0,
-        "hesitate_chance": 0.2,         # occasional extra 0-0.5s nav pause
-        "double_read": True,            # always read the board twice
-    },
-    "steady": {                         # default
-        "menu_tap_gap": (0.15, 0.21),
-        "transition_gap": (0.50, 0.70),
-        "bet_tap_gap": (0.055, 0.075),
-        "key_hold": (0.060, 0.090),
-        "spam_hold": (0.055, 0.075),
-        "race_wait_min": 26.0,
-        "race_wait_max": 44.0,
-        "ocr_settle": 0.5,
-        "hesitate_chance": 0.0,
-        "double_read": False,           # second read only if the first is weak
-    },
-    "fast": {                           # only after `tune` clears it
-        "menu_tap_gap": (0.11, 0.15),
-        "transition_gap": (0.38, 0.52),
-        "bet_tap_gap": (0.040, 0.055),
-        "key_hold": (0.045, 0.065),
-        "spam_hold": (0.040, 0.055),
-        "race_wait_min": 25.0,
-        "race_wait_max": 46.0,   # a cap, not a speed knob: only a long race
-                                 # ever reaches it, so trimming it just meant
-                                 # walking off the result screen mid-animation
-        "ocr_settle": 0.35,
-        "hesitate_chance": 0.0,
-        "double_read": False,
-    },
+TIMING = {
+    "menu_tap_gap": (0.05, 0.06),  # between presses inside one region
+    "transition_gap": (0.4, 0.5),  # after a press that changes region
+    "bet_tap_gap": (0.065, 0.07),   # between bet-increase taps
+    "place_bet_gap": (0.2, 0.3),     # the Down that crosses from the bet row
+                                     # into Place Bet. Its own knob rather
+                                     # than transition_gap, because it is the
+                                     # one crossing where the screen is known
+                                     # quiet -- verify_max_amount() has just
+                                     # read the amount off it -- so it can be
+                                     # trimmed without loosening the earlier
+                                     # crossings, which happen mid-animation
+                                     # and are where presses actually drop.
+                                     # Starts equal to transition_gap; take
+                                     # it down and watch for "(cross did not
+                                     # register" on the Place Bet press.
+    "place_bet_settle": 0.0,         # stillness wait before that Place Bet
+                                     # Cross. tap_confirm settles for 0 by
+                                     # default now -- a still frame costs a
+                                     # ~80ms capture and does not fit in its
+                                     # 0.5s budget -- so this matches it and
+                                     # exists to raise that ONE press if it
+                                     # ever needs it. It should not: verify_
+                                     # max_amount() has just read this screen,
+                                     # so it is known quiet.
+    "key_hold": (0.050, 0.075),      # how long each key is held. `tune`
+                                     # measured a 20ms hold registering as
+                                     # reliably as 220ms, so this is already
+                                     # generous -- hold is not the lever it
+                                     # looks like.
+    "spam_hold": (0.036, 0.050),     # hold during the bet-increase spam. With
+                                     # bet_tap_gap that is a ~86ms per-tap
+                                     # cycle: a little under the ~0.11s shown
+                                     # to reach $10,000 reliably, and well
+                                     # clear of the 30-50ms that dropped taps.
+    "race_wait_min": 22.0,           # never look for the result before this
+    "race_wait_max": 45.0,           # give up waiting for stillness here. A
+                                     # cap, not a speed knob: only a long race
+                                     # ever reaches it, so trimming it just
+                                     # meant walking off the result screen
+                                     # mid-animation.
+    "ocr_settle": 0.0,
+    "variance": (0.0, 0.05),         # extra jitter on EVERY nav gap, on top
+                                     # of the band's own spread. Always
+                                     # applied, unlike hesitate_chance below,
+                                     # so no gap is ever a round number and
+                                     # the press-to-press rhythm never
+                                     # repeats. Cheap: it only ever slows a
+                                     # gap down, and 50ms is well inside the
+                                     # bands `tune` validated. Set (0.0, 0.0)
+                                     # to switch it off.
+    "hesitate_chance": 0.0,          # occasional extra 0-0.5s nav pause
+    "double_read": False,            # second read only if the first is weak
 }
+
+# If navigation starts desyncing, raise these in this order: transition_gap
+# first, because the press after a region change is where drops actually happen
+# (see above), then menu_tap_gap. `tune` checks both in about a minute.
+#
+# An attempt at measuring these automatically -- ramping each part of the cycle
+# until it broke -- is not here, and the reason is worth recording: it has to
+# score each trial by looking at the screen, and on this stream the frame-to-
+# frame noise while nothing is happening came out larger than the difference
+# between one highlighted lane and the next. There is nothing to measure
+# against, whichever way the comparison is framed. Hence one set of numbers,
+# chosen inside the bands `tune` has already validated.
 
 # The bet-increase is 27+ presses of the same button, which is most of the
 # non-race time. "hold" tries a single long press and lets the menu's own
@@ -212,7 +318,7 @@ BET_HOLD_SECONDS = 3.0
 
 
 def T():
-    return TIMINGS[TIMING_PROFILE]
+    return TIMING
 
 
 # 100 -> 1000 in 100s (9 presses), 1000 -> 10000 in 500s (18 presses) = 27.
@@ -224,7 +330,7 @@ MIN_BET = 100
 DRY_RUN = False       # True = decide + log only. START WITH TRUE.
 DEBUG_SAVE = False    # save debug_lane*.png of each OCR input
 CONF_TRUST = 0.55     # min per-lane OCR confidence to bet real money on
-RECHECK_CONF = 0.80   # "fast" profile: below this, spend a confirming read
+RECHECK_CONF = 0.80   # below this, spend a second confirming read
 
 # --------------------------------------------------------------------------
 # Strategy
@@ -350,12 +456,18 @@ def get_window():
     return wins[0]
 
 
-def grab(region, lane_no=None):
+def grab_raw(region):
+    """The region straight off the screen, unprocessed."""
     win = get_window()
     left, top, w, h = region
     shot = _sct.grab({"left": win.left + left, "top": win.top + top,
                       "width": w, "height": h})
-    img = Image.frombytes("RGB", shot.size, shot.rgb)
+    return Image.frombytes("RGB", shot.size, shot.rgb)
+
+
+def grab(region, lane_no=None):
+    left, top, w, h = region
+    img = grab_raw(region)
     # Normalise to a fixed height so OCR sees a consistent text size.
     k = max(1.0, 150.0 / h)
     img = img.resize((max(16, int(w * k)), max(16, int(h * k))), Image.LANCZOS)
@@ -394,6 +506,13 @@ def parse_odds(text):
     if not ODDS_RE.match(t):
         return None
     return 1 if t == "EVENS" else int(t.split("/")[0])
+
+
+def odds_label(value):
+    """1 -> 'EVENS', 4 -> '4/1', None -> '??'."""
+    if value is None:
+        return "??"
+    return "EVENS" if int(value) == 1 else f"{int(value)}/1"
 
 
 def repair_text(t):
@@ -444,10 +563,10 @@ def read_board(verbose=False):
 
 
 def read_board_verified(verbose=False):
-    """A trusted board is complete and clears the confidence bar. The "safe"
-    profile also demands a second, agreeing read; "fast" spends that second
-    read only when the first one is merely adequate (below RECHECK_CONF),
-    which is where most of the per-race OCR time used to go.
+    """A trusted board is complete and clears the confidence bar. Setting
+    double_read demands a second, agreeing read every time; with it off that
+    second read is spent only when the first one is merely adequate (below
+    RECHECK_CONF), which is where most of the per-race OCR time used to go.
 
     A failed first read is never rescued by a second one -- the caller
     retries the whole cycle, which also gives the screen time to settle."""
@@ -461,17 +580,236 @@ def read_board_verified(verbose=False):
                 and min(c2) >= CONF_TRUST)
 
 
-def read_bet_amount():
-    """OCR the current bet amount; int or None."""
-    region = profile()["bet_amount_region"]
+MONEY_RE = re.compile(r"\d+")
+
+
+def parse_money(text):
+    """'$10,000' -> 10000. Separators are stripped only where they really
+    are separators (a . or , with exactly three digits behind it), so a
+    comma misread as a period does not turn $10,000 into $10."""
+    t = re.sub(r"[^\d.,]", "", text)
+    t = re.sub(r"[.,](?=\d{3}(?:\D|$))", "", t)
+    m = MONEY_RE.search(t)
+    return int(m.group()) if m else None
+
+
+def ocr_money(region):
+    """OCR a currency box; int, or None if there is no number in it."""
     if region is None:
         return None
-    img = grab(region)
     results = reader().readtext(
-        np.array(img), allowlist="$0123456789,.", paragraph=False
+        np.array(grab(region)), allowlist="$0123456789,.", paragraph=False
     )
-    digits = "".join(c for r in results for c in r[1] if c.isdigit())
-    return int(digits) if digits else None
+    if not results:
+        return None
+    results.sort(key=lambda r: r[0][0][0])
+    return parse_money("".join(r[1] for r in results))
+
+
+def read_bet_amount():
+    """OCR the current bet amount; int or None."""
+    return ocr_money(profile()["bet_amount_region"])
+
+
+def _isolate_digit(img):
+    """Cut the lane number out of its box: (binary glyph, ink aspect w/h),
+    or (None, None) if there is no glyph in there.
+
+    Worth the trouble because of the '1'. The number sits in a white disc
+    with the dark background showing in the corners, and every digit but the
+    1 fills that disc. A 1 is a sliver of ink in a wide white field, which is
+    exactly the shape EasyOCR's text *detector* throws away -- so the read
+    came back empty and every race won by lane 1 was logged as ungraded.
+    (The tell in race_log.csv: lanes 2-6 all showed up, lane 1 never did, and
+    the blanks were about as many as lane 1 wins should have been.)
+
+    Isolating the ink and re-padding it to a fixed height frames a 1 exactly
+    like a 6, and the recogniser is then handed that box directly, so nothing
+    depends on detection at all."""
+    import cv2
+
+    g = np.array(img.convert("L"))
+    if g.mean() < 128:          # dark disc, light number
+        g = 255 - g
+    _, bw = cv2.threshold(g, 0, 255,
+                          cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    n, _, stats, _ = cv2.connectedComponentsWithStats(bw, 8)
+    h_img, w_img = bw.shape
+
+    # The corners outside the disc are ink too. What tells them apart is that
+    # each is wedged into a corner -- it runs into two perpendicular edges of
+    # the box at once, which the number cannot do even when the region is
+    # measured several pixels off. Take the union of everything else that is
+    # digit-sized, so a glyph broken in two by antialiasing still comes out
+    # whole.
+    x0, y0, x1, y1 = w_img, h_img, 0, 0
+    for i in range(1, n):
+        x, y, w, h, area = stats[i]
+        if (x == 0 or x + w == w_img) and (y == 0 or y + h == h_img):
+            continue
+        if area < 20 or h < h_img * 0.25:
+            continue
+        x0, y0, x1, y1 = min(x0, x), min(y0, y), max(x1, x + w), max(y1, y + h)
+    if x1 <= x0 or y1 <= y0:
+        return None, None
+
+    glyph = bw[y0:y1, x0:x1]
+    w, h = x1 - x0, y1 - y0
+    k = 64.0 / h                # the recogniser's own input height
+    glyph = 255 - cv2.resize(glyph, (max(4, int(w * k)), 64),
+                             interpolation=cv2.INTER_AREA)
+    glyph = cv2.copyMakeBorder(glyph, 24, 24, 24, 24,
+                               cv2.BORDER_CONSTANT, value=255)
+    return glyph, w / h
+
+
+def _ocr_lane_digit(region):
+    """One read of a single-digit lane box; (lane 1-6 or None, raw text)."""
+    glyph, aspect = _isolate_digit(grab_raw(region))
+    if glyph is None:
+        return None, "(no glyph)"
+    if DEBUG_SAVE:
+        Image.fromarray(glyph).save("debug_win_lane.png")
+    h, w = glyph.shape
+    results = reader().recognize(
+        glyph, horizontal_list=[[0, w, 0, h]], free_list=[],
+        allowlist="123456", detail=1, paragraph=False
+    )
+    results.sort(key=lambda r: r[0][0][0])
+    text = "".join(r[1] for r in results).strip()
+    if len(text) == 1:
+        return int(text), text
+    # Nothing legible, but a glyph this narrow cannot be anything but a 1 --
+    # the next thinnest of 1-6 is about half again as wide.
+    if aspect is not None and aspect < 0.30:
+        return 1, f"{text!r} -> narrow ({aspect:.2f}), read as 1"
+    return None, text
+
+
+def read_win_lane(tries=4, gap=0.3):
+    """OCR the lane number of the horse that actually won. Returns
+    (lane 1-6 or None, last raw text). This is the whole result: it says who
+    won every race rather than only whether OUR horse came in, so the races
+    we lose stop being blanks in the record, and the payout follows from the
+    board we already read.
+
+    Two consecutive agreeing reads, so it is not read mid-animation.
+    Ambiguous text (nothing, or more than one digit) is left as None rather
+    than guessed at."""
+    region = profile().get("win_lane_region")
+    if region is None:
+        return None, None
+    prev, raw = None, None
+    for i in range(tries):
+        if i:
+            time.sleep(gap)
+        lane, raw = _ocr_lane_digit(region)
+        if lane is not None and lane == prev:
+            return lane, raw
+        prev = lane
+    return prev, raw
+
+
+# --------------------------------------------------------------------------
+# Race log -- our own record of what we bet and what came back
+# --------------------------------------------------------------------------
+# One CSV row per placed bet, appended forever. Nothing is ever overwritten:
+# every run tags its rows with its own run_id, so the file accumulates across
+# sessions and gets more useful as it grows. `python inside_track_bot.py
+# stats` reads it back. This is the point of the whole exercise -- the
+# strategy in the docstring is fitted to somebody else's 547 races, and this
+# is how we replace it with our own numbers.
+#
+# The result is graded off the win amount on the result screen: > 0 means the
+# horse came in and the row records the payout, 0 means it lost, and an
+# unreadable box is logged as blank rather than guessed at.
+
+LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "race_log.csv")
+
+LOG_FIELDS = [
+    "run_id", "ts", "profile", "strategy", "timing", "dry",
+    "odds1", "odds2", "odds3", "odds4", "odds5", "odds6",
+    "lane", "horse", "max_bet", "reason",
+    "stake", "win_lane", "win_odds", "won", "payout", "profit",
+    "trusted", "race_s", "cycle_s", "settled",
+]
+
+RUN_ID = time.strftime("%Y%m%d-%H%M%S")
+
+
+def grade(odds, lane, stake, win_lane):
+    """Score a race from the winning lane. Returns (won, payout), both None
+    if the lane could not be read.
+
+    The payout is computed, not observed: Inside Track pays (odds + 1) x the
+    stake, so the board we already read and the lane that won are between
+    them the whole result. Reading the payout box as well was a second OCR
+    per race to learn a number we can multiply out."""
+    if win_lane is None:
+        return None, None
+    won = int(win_lane == lane)
+    horse = odds[lane - 1] if lane else None
+    payout = stake * (horse + 1) if (won and horse and stake) else 0
+    return won, payout
+
+
+def _open_log():
+    """Append-mode writer with the header written once. An existing file
+    whose columns no longer match is renamed aside rather than appended to
+    with a mismatched header, so no data is lost or silently misaligned."""
+    exists = os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 0
+    if exists:
+        with open(LOG_PATH, newline="", encoding="utf-8") as f:
+            header = next(csv.reader(f), [])
+        if header != LOG_FIELDS:
+            backup = f"{os.path.splitext(LOG_PATH)[0]}.{RUN_ID}.old.csv"
+            os.rename(LOG_PATH, backup)
+            print(f"  (race log columns changed -- previous log kept as "
+                  f"{os.path.basename(backup)})")
+            exists = False
+    fh = open(LOG_PATH, "a", newline="", encoding="utf-8")
+    writer = csv.DictWriter(fh, fieldnames=LOG_FIELDS, extrasaction="ignore")
+    if not exists:
+        writer.writeheader()
+    return fh, writer
+
+
+def log_race(odds, lane, max_bet, reason, trusted, stake, win_lane,
+             race_s, cycle_s, settled):
+    """Append one race. Never raises into the run loop: a logging problem
+    must not be able to stop the bot mid-cycle."""
+    won, payout = grade(odds, lane, stake, win_lane)
+    row = {
+        "run_id": RUN_ID,
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "profile": PROFILE,
+        "strategy": STRATEGY,
+        "timing": TIMING_NAME,
+        "dry": int(bool(DRY_RUN)),
+        "lane": lane,
+        "horse": odds[lane - 1] if lane else None,
+        "max_bet": int(bool(max_bet)),
+        "reason": reason,
+        "stake": stake,
+        "win_lane": win_lane,
+        "win_odds": odds[win_lane - 1] if win_lane else None,
+        "won": won,
+        "payout": payout,
+        "profit": None if payout is None else payout - stake,
+        "trusted": int(bool(trusted)),
+        "race_s": round(race_s, 1),
+        "cycle_s": round(cycle_s, 1),
+        "settled": int(bool(settled)),
+    }
+    for i, value in enumerate(odds, start=1):
+        row[f"odds{i}"] = value
+    try:
+        fh, writer = _open_log()
+        with fh:
+            writer.writerow(row)
+    except Exception as e:      # disk full, file open in Excel, ...
+        print(f"  (could not write {LOG_PATH}: {e})")
 
 
 # --------------------------------------------------------------------------
@@ -599,6 +937,7 @@ def _press(key, hold=None):
 
 def _gap(base_range):
     d = random.uniform(*base_range)
+    d += random.uniform(*T().get("variance", (0.0, 0.0)))
     if random.random() < T()["hesitate_chance"]:
         d += random.uniform(0.0, 0.5)   # human-like hesitation
     return d
@@ -611,15 +950,17 @@ def tap(key):
     time.sleep(_gap(T()["menu_tap_gap"]))
 
 
-def tap_edge(key):
+def tap_edge(key, gap_range=None):
     """A press that moves between regions of the menu -- the cursor coming in
     at lane 6, the horse being selected, the jump across to the bet column.
     The UI animates through those, and a press arriving mid-animation is
-    swallowed, which desyncs everything after it. Give them room."""
+    swallowed, which desyncs everything after it. Give them room.
+
+    gap_range overrides transition_gap for a crossing that has its own knob."""
     if DRY_RUN:
         return
     _press(key)
-    time.sleep(_gap(T()["transition_gap"]))
+    time.sleep(_gap(gap_range or T()["transition_gap"]))
 
 
 _change_thr = None
@@ -671,33 +1012,63 @@ def wait_still(timeout=3.0, samples=2, gap=0.14):
     return False
 
 
-def tap_confirm(key, tries=3, timeout=2.0, settle=3.0):
+def tap_confirm(key, tries=3, budget=0.5, settle=0.0):
     """A press that must land, for the ones that change the whole screen.
-    Waits for the picture to be still, presses, waits for it to actually
-    change, and presses again if it did not. This is what stops the bot
-    sitting on Place Bet forever because one Cross was swallowed.
+    Presses, watches for the picture to actually change, and presses again if
+    it did not. This is what stops the bot sitting on Place Bet forever
+    because one Cross was swallowed.
 
-    The settle wait is what makes the confirm mean anything: arriving at the
-    result screen while it was still animating, the old version saw motion it
-    had not caused, called the press confirmed, and moved on with BET AGAIN
-    never actually pressed. The change also has to survive the transition
-    gap, so a one-frame flicker does not read as a new screen.
+    `budget` is the whole thing: one attempt -- settle, press and verify --
+    stops at that deadline instead of each stage carrying its own generous
+    timeout. A retry gets a fresh budget, so only a press that genuinely did
+    not land pays more than 0.5s.
+
+    Where the old ~1.5s went:
+      * the post-change re-check slept a full transition_gap (~0.45s) before
+        looking again. It tells a one-frame flicker from a real change, and
+        consecutive _frame() captures are already ~80ms apart on this window,
+        so that sleep was buying separation the capture cost already gives.
+      * `settle` was 3s and wanted two still frames at a 0.14s poll: a ~0.45s
+        floor, paid on every press, on screens that were already still.
+      * the change hunt had a 2s timeout of its own. It now just runs until
+        the deadline.
+
+    Two things worth knowing before trimming `budget` further:
+
+    The deadline governs when the polling STOPS, not the capture in flight,
+    and a change seen after it has passed is accepted rather than retried. So
+    a confirm can run ~0.1s over. That slack is deliberate: the round trip
+    post -> PS5 -> stream -> screen measured 282ms on this connection, which
+    already eats most of a 0.5s budget, and the failure mode at the bottom is
+    not a slow confirm but a SECOND press -- an extra Cross on Place Bet
+    lands on whatever screen comes next. Overshooting by a frame is much
+    cheaper than that, and if the log fills with "did not register" the
+    connection has outrun the budget: raise it, do not add retries.
+
+    `settle` now defaults to 0. It existed because a press measured against
+    an animating screen reads as landed whether or not it did -- how BET
+    AGAIN once went unpressed -- but at one still frame per ~80ms capture it
+    cannot fit inside this budget alongside the round trip. The guard is now
+    the caller's: return_to_start() does its own generous wait_still() before
+    pressing, which is the screen that actually animates.
 
     Returns whether it got through."""
     if DRY_RUN:
         return True
     thr = change_threshold()
     for attempt in range(tries):
+        end = time.time() + budget
         if settle:
-            wait_still(timeout=settle)
+            wait_still(timeout=min(settle, budget), samples=1, gap=0.03)
         base = _frame()
         _press(key)
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            time.sleep(0.12)
+        while time.time() < end:
+            time.sleep(0.03)
             if _changed(base, _frame(), thr):
-                time.sleep(_gap(T()["transition_gap"]))
-                if _changed(base, _frame(), thr):
+                # Re-check, but only if the budget still has room for a
+                # frame. Out of time, a single seen change counts: another
+                # blind press is more expensive than a rare false positive.
+                if time.time() >= end or _changed(base, _frame(), thr):
                     return True
                 break        # a blip, not a screen change -- press again
         print(f"  ({key} did not register, retry {attempt + 2}/{tries})")
@@ -758,16 +1129,17 @@ def spam_increase(n):
 
 def verify_max_amount():
     """Closed-loop check that the bet reached $10,000, correcting the two
-    known slip modes. Needs bet_amount_region; no-op otherwise."""
+    known slip modes. Returns the amount finally showing, or None if it
+    could not be read. Needs bet_amount_region; no-op otherwise."""
     if DRY_RUN or profile()["bet_amount_region"] is None:
-        return
+        return None
     for _ in range(2):
         amt = read_bet_amount()
         if amt is None:
             print("  (bet amount unreadable -- proceeding unverified)")
-            return
+            return None
         if amt >= MAX_BET:
-            return
+            return amt
         if amt <= MIN_BET:
             print(f"  (amount ${amt}: Right into increase was eaten -- correcting)")
             tap("right")
@@ -777,6 +1149,7 @@ def verify_max_amount():
     amt = read_bet_amount()
     if amt is not None and amt < MAX_BET:
         print(f"  (WARNING: could not reach max, placing at ${amt})")
+    return amt
 
 
 def place_bet(lane, max_bet):
@@ -787,8 +1160,10 @@ def place_bet(lane, max_bet):
     Min bet: Down goes straight from decrease to Place Bet.
 
     The tap_edge() calls are the region crossings that eat presses; the Up
-    walk between them is a plain tap and can stay quick. Returns whether the
-    bet actually went on."""
+    walk between them is a plain tap and can stay quick. Returns
+    (bet went on, stake) -- the stake read back off the screen where that is
+    possible, so the log records what was really bet rather than what was
+    intended."""
     tap_edge("left")                 # nothing selected -> cursor in at lane 6
     for _ in range(6 - lane):
         tap("up")                    # walking within the lane list
@@ -796,13 +1171,21 @@ def place_bet(lane, max_bet):
     tap_edge("right")                # horse column -> bet column
     for _ in range(UPS_TO_DECREASE[lane]):
         tap("up")                    # -> decrease-bet button
+    stake = MAX_BET if max_bet else MIN_BET
     if max_bet:
         tap("right")                 # -> increase-bet button
         spam_increase(MAX_BET_PRESSES)
-        verify_max_amount()
-    tap_edge("down")                 # bet row -> Place Bet: a region change,
-                                     # so the Cross after it needs the room
-    return tap_confirm("cross")      # place bet; verified, race starts
+        stake = verify_max_amount() or stake
+    elif not DRY_RUN:
+        stake = read_bet_amount() or stake   # the skip bet, whatever it says
+    # bet row -> Place Bet. A region change, so the Cross after it needs room
+    # -- but this is the quiet one: the menu has been static since
+    # verify_max_amount() read the amount off it, so both halves of the wait
+    # get their own knob and can come down without touching the crossings
+    # earlier in the walk, which happen mid-animation.
+    tap_edge("down", T().get("place_bet_gap"))
+    return (tap_confirm("cross", settle=T().get("place_bet_settle", 0.0)),
+            stake)                   # place bet; verified, race starts
 
 
 def return_to_start():
@@ -858,18 +1241,40 @@ def wait_for_race_end():
     return time.time() - t0, settled
 
 
-def back_out():
-    """Circle out of whatever screen we are on, back to the machine's start
-    screen."""
-    for _ in range(3):
-        tap_edge("circle")
+def back_out(steps=1):
+    """Circle back one screen, to the machine's start screen.
+
+    This used to fire three unconfirmed Circles, on the theory that spare
+    presses were free insurance against a swallowed one. They are not: the
+    betting board is a single Circle from the start screen, so the second
+    press walked the player out of the machine and the third went into the
+    open world. Nothing downstream can recover from that -- the Right and
+    Cross of enter_single_event() mean nothing while standing in the casino,
+    so every later cycle failed too.
+
+    The two errors are not symmetrical, and that is what sets the design.
+    Backing out too far is unrecoverable. Not backing out far enough is
+    self-correcting: the board read at the top of the loop fails and brings
+    us straight back here. So press once, and press it as a confirmed press
+    -- tap_confirm retries only when the screen did not react, which is the
+    dropped-press insurance the three blind Circles were reaching for,
+    without ever landing a press that was not needed.
+
+    steps is here for a screen that really does sit deeper; raise it only
+    with a specific one in mind."""
+    for _ in range(steps):
+        tap_confirm("circle")
     time.sleep(1.0)
 
 
 def recover():
-    """Called when the board cannot be read. Rather than pressing on blind --
-    which is how a desync turns into a bet on the wrong horse -- back out to
-    a known screen and come in again."""
+    """Back out to a known screen and come in again, rather than pressing on
+    blind -- which is how a desync turns into a bet on the wrong horse.
+
+    Only for the retry inside the read loop, which carries on reading where
+    it stands. The paths that `continue` must call back_out() alone: the top
+    of the loop does its own enter_single_event(), and entering twice puts a
+    Right and a Cross into the board instead of the start screen."""
     print("  recovering: backing out to the machine start screen")
     back_out()
     enter_single_event()
@@ -897,7 +1302,7 @@ def ensure_window():
 
 def preflight():
     """Warn about the setups that make a virtual pad leak into other windows."""
-    print(f"Input mode: {INPUT_MODE}   timing profile: {TIMING_PROFILE}   "
+    print(f"Input mode: {INPUT_MODE}   timings: {TIMING_NAME}   "
           f"strategy: {STRATEGY}")
     if INPUT_MODE == "postmessage":
         try:
@@ -950,8 +1355,13 @@ def run():
     ensure_window()
     time.sleep(5)
 
-    races = staked = 0
+    races = staked = returned = wins = graded = graded_stake = 0
     t_start = time.time()
+    if profile().get("win_lane_region") is None:
+        print(f"NOTE: profile {PROFILE!r} has no win_lane_region, so races "
+              "will be logged without a result.")
+    else:
+        print(f"Logging every race to {LOG_PATH} (run {RUN_ID}).")
 
     while True:
         wait_while_paused()
@@ -978,19 +1388,41 @@ def run():
         if lane is None:
             print("  board still unreadable -> skipping this cycle, "
                   "no bet placed")
-            recover()
-            continue
+            back_out()          # not recover(): the top of the loop is the
+            continue            # thing that comes back in, one line below
 
-        if not place_bet(lane, max_bet):
+        placed, stake = place_bet(lane, max_bet)
+        if not placed:
             print("  Place Bet never registered -> recovering, no race counted")
-            recover()
-            continue
+            back_out()          # as above -- recover() here would enter the
+            continue            # board twice, and the second Right + Cross
+                                # would land on the board itself
         races += 1
-        staked += MAX_BET if max_bet else MIN_BET
+        staked += stake
         raced, settled = wait_for_race_end()
         if not settled:
             print(f"  (race screen never went still within {raced:.0f}s -- "
                   "pressing on)")
+
+        # Grade the race off the result screen BEFORE anything is pressed:
+        # once BET AGAIN goes in, the winning lane is gone. A lane that
+        # cannot be read is left blank in the log rather than guessed at --
+        # a missed read and a lost bet are not the same thing once you start
+        # fitting numbers to this.
+        win_lane = None if DRY_RUN else read_win_lane()[0]
+        won, payout = grade(odds, lane, stake, win_lane)
+        if won is None:
+            print("  result: UNREADABLE -- logged without a result")
+        else:
+            graded += 1
+            graded_stake += stake
+            returned += payout
+            wins += won
+            print(f"  result: lane {win_lane} "
+                  f"({odds_label(odds[win_lane - 1])}) won -- "
+                  f"{f'${payout:,} back' if won else 'lost'} "
+                  f"on ${stake:,}")
+
         if not return_to_start():
             # The result screen is still up and the next cycle would start
             # from the wrong place. Circle out; the top of the loop comes
@@ -1000,11 +1432,26 @@ def run():
             back_out()
 
         cycle = time.time() - t_race
-        rate = races / ((time.time() - t_start) / 3600)
+        log_race(odds, lane, max_bet, reason, trusted, stake, win_lane,
+                 raced, cycle, settled)
+
+        hours = (time.time() - t_start) / 3600
+        rate = races / hours
         print(f"  bet {'MAX' if max_bet else f'${MIN_BET}'} on lane {lane} "
               f"(race #{races})  cycle {cycle:.1f}s (race {raced:.1f}s)  "
-              f"rate {rate:.0f} races/h  ->  projected "
-              f"${rate * (staked / races) * 0.506:,.0f}/h at +50.6% ROI")
+              f"rate {rate:.0f} races/h")
+        if graded:
+            net = returned - graded_stake
+            # Only the graded races have a return, so measure the ROI over
+            # what they staked -- mixing in ungraded stakes would fake a loss.
+            print(f"  session: {wins}/{graded} won, ${returned:,} back, "
+                  f"net ${net:+,} ({net / graded_stake * 100:+.1f}% ROI) "
+                  f"-> ${net / hours:+,.0f}/h"
+                  + (f"   [{races - graded} ungraded]"
+                     if races > graded else ""))
+        else:
+            print(f"  projected ${rate * (staked / races) * 0.506:,.0f}/h "
+                  "at his +50.6% ROI -- no results of our own yet")
 
 
 def budget():
@@ -1012,19 +1459,26 @@ def budget():
     worth ~$4,900 a race; whether that lands in his 500-800k/h band is
     entirely a question of how many races per hour this loop manages."""
     profit_per_race = 4917.0     # measured over his 547 races, see validate.py
-    print(f"Cycle-time model for TIMING_PROFILE = {TIMING_PROFILE!r}\n")
-    for name, t in TIMINGS.items():
+    print(f"Cycle-time model for the {TIMING_NAME!r} timings\n")
+    for name, t in ((TIMING_NAME, TIMING),):
         hold = sum(t["key_hold"]) / 2
-        plain = hold + sum(t["menu_tap_gap"]) / 2 + t["hesitate_chance"] * 0.25
-        edge = hold + sum(t["transition_gap"]) / 2
+        var = sum(t.get("variance", (0.0, 0.0))) / 2   # every gap carries it
+        plain = (hold + sum(t["menu_tap_gap"]) / 2 + var
+                 + t["hesitate_chance"] * 0.25)
+        edge = hold + sum(t["transition_gap"]) / 2 + var
         # 8 region crossings: enter-cross, left, select-cross, right,
         # down-to-place, place-cross, return down, return cross
         # ~5.5 ordinary taps: enter-right, up walk (avg 3), ups (avg .5),
         # right-to-increase
-        # +2.1s for the three tap_confirm() round trips: each settles the
-        # picture (~0.3s on a quiet menu) before pressing, then waits for the
-        # screen to react and re-checks that the change stuck
-        nav = 8 * edge + 5.5 * plain + 2.1
+        # +1.5s for the three tap_confirm() round trips: each settles the
+        # picture before pressing, then waits for the screen to react and
+        # re-checks that the change stuck. One attempt is capped at 0.5s by
+        # tap_confirm's budget and the typical one spends most of it, since
+        # every stage is a _frame() capture and those measured 79ms on this
+        # window. A retry, when one is needed, adds another 0.5s.
+        place_edge = (hold + sum(t.get("place_bet_gap",
+                                       t["transition_gap"])) / 2 + var)
+        nav = 7 * edge + place_edge + 5.5 * plain + 1.5
         if BET_INCREASE_MODE == "hold":
             spam = BET_HOLD_SECONDS + 0.3
         else:
@@ -1035,8 +1489,8 @@ def budget():
         race = t["race_wait_min"] + 4.0   # +detection; measured live at runtime
         total = nav + spam + ocr + race
         rate = 3600 / total
-        mark = " <- active" if name == TIMING_PROFILE else ""
-        print(f"  {name:>6}: nav {nav:5.1f}s  betspam {spam:4.1f}s  "
+        mark = ""
+        print(f"  {name:>13}: nav {nav:5.1f}s  betspam {spam:4.1f}s  "
               f"ocr {ocr:4.1f}s  race ~{race:4.1f}s  "
               f"= {total:5.1f}s/race -> {rate:5.1f} races/h "
               f"-> ${rate * profit_per_race:>9,.0f}/h{mark}")
@@ -1101,7 +1555,7 @@ def tune():
 
     print("TUNE -- put chiaki-ng on the SINGLE EVENT board with a horse")
     print("highlighted. Only Up/Down are sent; no bet can be placed.")
-    print(f"Checking the {TIMING_PROFILE!r} profile. Starting in 5s...")
+    print("Checking the timings in TIMING. Starting in 5s...")
     print()
     time.sleep(5)
 
@@ -1176,7 +1630,7 @@ def tune():
 
     # 1. the lane walk at this profile's own pacing
     print()
-    print(f"  5-lane walk at {TIMING_PROFILE!r} pacing "
+    print(f"  5-lane walk at the current pacing "
           f"(hold {t['key_hold'][0]*1000:.0f}-{t['key_hold'][1]*1000:.0f}ms, "
           f"gap {t['menu_tap_gap'][0]*1000:.0f}-"
           f"{t['menu_tap_gap'][1]*1000:.0f}ms):")
@@ -1215,11 +1669,11 @@ def tune():
     print()
     print("  " + "-" * 62)
     if all(w == 5 for w in walk):
-        print(f"  The {TIMING_PROFILE!r} profile walks lanes correctly here.")
+        print("  These timings walk lanes correctly here.")
     else:
-        print(f"  The {TIMING_PROFILE!r} profile is dropping presses. Raise")
-        print("  menu_tap_gap first, then transition_gap, or fall back to")
-        print("  TIMING_PROFILE = 'safe'.")
+        print("  These timings are dropping presses. Raise transition_gap in")
+        print("  TIMING first -- the press after a region change is where the")
+        print("  drops happen -- then menu_tap_gap.")
     print("  If the two rows above differ, that gap is what the three")
     print("  tap_edge() calls in place_bet() exist to cover.")
 
@@ -1250,14 +1704,141 @@ def probe():
     for i, (l, t, w, h) in enumerate(profile()["odds_regions"], start=1):
         draw.rectangle([l, t, l + w, t + h], outline=(255, 0, 0), width=3)
         draw.text((l + 4, max(0, t - 16)), f"lane {i}", fill=(255, 0, 0))
-    bet = profile()["bet_amount_region"]
-    if bet:
-        l, t, w, h = bet
-        draw.rectangle([l, t, l + w, t + h], outline=(0, 80, 255), width=3)
-        draw.text((l + 4, max(0, t - 16)), "bet amount", fill=(0, 80, 255))
+    for key, label, colour in (
+            ("bet_amount_region", "bet amount", (0, 80, 255)),
+            ("win_lane_region", "win lane", (255, 200, 0))):
+        box = profile().get(key)
+        if box:
+            l, t, w, h = box
+            draw.rectangle([l, t, l + w, t + h], outline=colour, width=3)
+            draw.text((l + 4, max(0, t - 16)), label, fill=colour)
     img.save("probe.png")
     print("Saved probe.png -- red boxes should sit exactly on the six odds "
-          "values (blue on the bet amount).")
+          "values (blue on the bet amount). Run this again on a RESULT "
+          "screen to check the yellow 'win lane' box.")
+
+
+def read_result_once():
+    """One read of the result screen, for checking win_lane_region without
+    running the bot. Park the game on a result screen and run it."""
+    ensure_window()
+    time.sleep(1.0)
+    if profile().get("win_lane_region") is None:
+        print(f"Profile {PROFILE!r} has no win_lane_region set. Capture a "
+              "result screen with `calibrate`, measure the winning-horse "
+              "number box off it, and put it in PROFILES.")
+        return
+    t0 = time.time()
+    lane, raw = read_win_lane()
+    if lane is None:
+        print(f"win lane: UNREADABLE (raw {raw!r}) -- the box should contain "
+              "just the winning horse's number; check probe.png against a "
+              "result screen.")
+    else:
+        print(f"win lane: {lane}")
+    print(f"({time.time() - t0:.2f}s)")
+
+
+def stats():
+    """Read race_log.csv back: what our own bets have actually returned.
+    This is the number that eventually replaces the +50.6% in the docstring,
+    which was measured on somebody else's races."""
+    if not os.path.exists(LOG_PATH):
+        print(f"No log yet at {LOG_PATH} -- it is written as the bot runs.")
+        return
+    with open(LOG_PATH, newline="", encoding="utf-8") as f:
+        rows = [r for r in csv.DictReader(f) if r.get("dry") != "1"]
+    runs = {r["run_id"] for r in rows}
+    graded = [r for r in rows if r.get("win_lane")]
+    print(f"{LOG_PATH}")
+    print(f"  {len(rows)} bets over {len(runs)} run(s), "
+          f"{len(graded)} with a readable winning lane")
+    if not graded:
+        print("  Nothing graded yet -- is win_lane_region right? "
+              "Check with `python inside_track_bot.py result 4k`.")
+        return
+
+    def summarise(label, group):
+        stake = sum(float(r["stake"] or 0) for r in group)
+        back = sum(float(r["payout"] or 0) for r in group)
+        won = sum(1 for r in group if r["won"] == "1")
+        roi = (back - stake) / stake * 100 if stake else 0.0
+        print(f"    {label:<10} n={len(group):<5} won {won:>4} "
+              f"({won / len(group) * 100:5.1f}%)  staked ${stake:>12,.0f}  "
+              f"back ${back:>12,.0f}  ROI {roi:+7.1f}%")
+
+    print()
+    summarise("ALL", graded)
+
+    def horse_label(r):
+        return odds_label(int(r["horse"])) if r["horse"] else "?"
+
+    def by_price(keys):
+        return sorted(keys, key=lambda k: 1 if k == "EVENS" else
+                      (int(k.split("/")[0]) if "/" in k else 99))
+
+    print("\n  by horse backed (break-even win rate is 1/(n+1)):")
+    for key in by_price({horse_label(r) for r in graded}):
+        summarise(key, [r for r in graded if horse_label(r) == key])
+
+    print("\n  by lane backed:")
+    for lane in sorted({r["lane"] for r in graded if r["lane"]}, key=int):
+        summarise(f"lane {lane}", [r for r in graded if r["lane"] == lane])
+
+    print("\n  by bet size:")
+    for flag, label in (("1", "max bet"), ("0", "min skip")):
+        group = [r for r in graded if r["max_bet"] == flag]
+        if group:
+            summarise(label, group)
+
+    recent = graded[-50:]
+    if len(graded) > len(recent):
+        print()
+        summarise("last 50", recent)
+
+    what_won(rows)
+
+    ungraded = len(rows) - len(graded)
+    if ungraded:
+        print(f"\n  {ungraded} bet(s) logged without a result (the winning "
+              "lane would not read) -- excluded from every figure above.")
+
+
+def what_won(rows):
+    """The table this log exists for. Every race says which PRICE won,
+    whether or not we backed it, so this measures each horse the way
+    validate.py measures his 547 races -- flat-bet ROI for backing that price
+    every time it appears -- on boards we read ourselves."""
+    board = [r for r in rows if r["win_lane"]
+             and all(r[f"odds{i}"] for i in range(1, 7))]
+    if not board:
+        print("\n  No races with a readable winning lane yet. Set "
+              "win_lane_region and check it with `result`; without it the "
+              "races we LOSE teach us nothing.")
+        return
+    appear, won, lanes_won = {}, {}, {}
+    for r in board:
+        wl = int(r["win_lane"])
+        lanes_won[wl] = lanes_won.get(wl, 0) + 1
+        for i in range(1, 7):
+            o = int(r[f"odds{i}"])
+            appear[o] = appear.get(o, 0) + 1
+        w = int(r[f"odds{wl}"])
+        won[w] = won.get(w, 0) + 1
+
+    print(f"\n  what actually wins ({len(board)} races, whatever we bet):")
+    print(f"    {'price':<8}{'appeared':>9}{'won':>6}{'win rate':>10}"
+          f"{'break-even':>12}{'flat ROI':>10}")
+    for o in sorted(appear):
+        n, w = appear[o], won.get(o, 0)
+        print(f"    {odds_label(o):<8}{n:>9}{w:>6}{w / n * 100:>9.1f}%"
+              f"{100.0 / (o + 1):>11.1f}%{(w * (o + 1) - n) / n * 100:>9.1f}%")
+    print("    flat ROI = backing that price every time it appeared. This is "
+          "what\n    PICK_ORDER should eventually be rebuilt from: the "
+          "ordering in this file\n    is his data, not ours.")
+    print("\n  winning lane: "
+          + "  ".join(f"{l}: {lanes_won.get(l, 0)}" for l in range(1, 7))
+          + f"   (an even split would be {len(board) / 6:.0f} each)")
 
 
 def read_once():
@@ -1274,11 +1855,11 @@ def read_once():
 if __name__ == "__main__":
     COMMANDS = {"run": run, "read": read_once, "calibrate": calibrate,
                 "probe": probe, "keytest": keytest, "budget": budget,
-                "tune": tune}
+                "tune": tune, "result": read_result_once, "stats": stats}
     # No default mode: a bare `python inside_track_bot.py` used to start
     # betting real money, which is one stray Enter away from an accident.
     if not sys.argv[1:]:
-        print(__doc__.split("COMMANDS")[1].split("SETUP")[0].strip())
+        print(__doc__.split("COMMANDS")[1].split("OUR OWN RECORD")[0].strip())
         print("\nName a command explicitly -- 'run' included.")
         sys.exit(2)
     mode = None
@@ -1288,8 +1869,13 @@ if __name__ == "__main__":
             mode = a
         elif a in PROFILES:            # screen profile: main / 4k
             PROFILE = a
-        elif flag in TIMINGS:          # timing profile: safe / steady / fast
-            TIMING_PROFILE = flag
+        elif flag in ("fast", "steady", "safe"):
+            print(f"There are no timing profiles any more: {flag!r} was one of "
+                  f"three guesses.")
+            print("There is one set of numbers in TIMING, near the top of this "
+                  "file; `tune` checks")
+            print("them and `budget` models what they cost.")
+            sys.exit(1)
         elif flag in ("dry", "dry-run"):
             DRY_RUN = True
         elif flag in ("chart", "pickorder"):
@@ -1298,7 +1884,6 @@ if __name__ == "__main__":
             print(f"Unknown argument {a!r}\n"
                   f"  commands: {'/'.join(COMMANDS)}\n"
                   f"  screens:  {'/'.join(PROFILES)}\n"
-                  f"  timing:   {'/'.join(TIMINGS)}\n"
                   f"  other:    --dry, --chart, --pickorder")
             sys.exit(1)
     if mode is None:
