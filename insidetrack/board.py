@@ -102,6 +102,35 @@ class BoardReader:
         return all(second[lane][0] == odds[lane - 1]
                    and second[lane][1] >= CONF_TRUST for lane in lanes)
 
+    @property
+    def can_see_result_screen(self) -> bool:
+        """Has this screen profile been measured for the banner at all? If
+        not, the race wait has nothing to watch for and falls back."""
+        return self._profile.result_banner_region is not None
+
+    def sees_result_screen(self) -> bool:
+        """Is the result screen's title banner showing right now?
+
+        This is what ends the race wait. Two pixel counts over one small
+        crop -- about a millisecond -- so it can be asked twenty times a
+        second without costing anything, and unlike stillness it answers the
+        question actually being asked. The camera holding on the horses for
+        two seconds after the finish is quiet and is not the result screen;
+        the result screen fading in is busy and is.
+        """
+        signature = self.result_signature()
+        return signature is not None and signature[2]
+
+    def result_signature(self):
+        """(dark fraction, yellow fraction, matched) for the banner box, or
+        None if this screen has no result_banner box measured. Exposed for
+        `insidetrack result`, which is how you check the box is on it."""
+        region = self._profile.result_banner_region
+        if region is None:
+            return None
+        dark, yellow = vision.banner_fractions(self._screen.grab(region))
+        return dark, yellow, vision.is_banner(dark, yellow)
+
     def read_bet_amount(self) -> Optional[int]:
         """The stake showing on screen, or None if there is no box for it."""
         region = self._profile.bet_amount_region

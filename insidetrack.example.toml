@@ -107,6 +107,23 @@ bet_amount = [1315, 480, 140, 75]
 # `stats` has nothing to report.
 # win_lane = [0, 0, 0, 0]
 
+# The RESULTS title panel at the top of the result screen -- the black box
+# with the yellow letters in it. Measure it on the same screen as win_lane.
+#
+# This one is never read as text. It is matched on two colours, mostly
+# near-black with some yellow in it, which is how the bot knows a race is
+# over. Keep the box INSIDE the panel: the orange backdrop leaking in is the
+# thing that breaks it, and the letters have to be in there too, because a
+# plain black panel is not a match either.
+#
+# Leaving it out costs seconds a race. The fallback is watching for the
+# picture to stop moving, and after the finish the camera holds on the
+# horses for anywhere between half a second and three -- so race_wait_min
+# has to clear the worst case, in every race, whether or not it happens.
+# With this box measured the banner says when, and race_wait_min only has to
+# stay inside the race.
+# result_banner = [0, 0, 0, 0]
+
 
 # A second layout, to show the all-six-boxes form. Delete it if you only
 # have one screen.
@@ -121,6 +138,7 @@ bet_amount = [1315, 480, 140, 75]
 # ]
 # bet_amount = [1985, 765, 220, 130]
 # win_lane = [1405, 785, 80, 90]
+# result_banner = [1210, 60, 480, 180]
 
 
 # ---------------------------------------------------------------------------
@@ -137,4 +155,24 @@ bet_amount = [1315, 480, 140, 75]
 # [timing]
 # transition_gap = [0.4, 0.5]
 # menu_tap_gap = [0.05, 0.06]
-# race_wait_min = 32.0
+
+# The floor on the race wait: the bot does not look for the result before
+# this. There are two of them, because what the floor has to do depends
+# entirely on which signal ends the wait, and the two answers are ~8s apart.
+#
+# banner_wait_min applies when the screen has a result_banner box. It is NOT
+# a guess at when the race ends -- the banner is what says that -- only a
+# point safely past the screens between placing the bet and the race
+# starting, so nothing before the race can be mistaken for the result. One
+# poll costs about 7ms, so looking early is close to free and this can come
+# down a long way. Take it down in steps and watch the race_s column in
+# race_log.csv: while race_s keeps landing on the same value the floor is
+# still the thing you are waiting on, and when it starts varying race to
+# race the banner has taken over and there is nothing left to win.
+# banner_wait_min = 25.0
+#
+# race_wait_min applies without a result_banner box. It has to clear the
+# finish AND the 0.5-3s camera hold after it, because stillness cannot tell
+# that hold from the result screen. This one cannot come down much: if it
+# does, races end on a held camera with no result on screen.
+# race_wait_min = 33.0

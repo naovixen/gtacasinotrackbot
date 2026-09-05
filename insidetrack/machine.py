@@ -131,19 +131,30 @@ class Machine:
         return self._board.read_bet_amount() or MIN_BET
 
     def wait_for_race_end(self) -> Tuple[float, bool]:
-        """Watch the picture and return once the race has stopped moving:
-        (seconds spent, whether it really went still rather than timing out).
+        """Wait out the race and return once the result is on screen:
+        (seconds spent, whether the result really arrived rather than the
+        wait timing out).
 
-        This is where the dead time after a race was. The old version polled
-        every 350ms and wanted five quiet samples -- 1.75s of watching an
-        already-finished screen before it would believe it. A frame now costs
-        33ms to capture rather than 84ms, so three samples at the natural
-        cadence answer the same question in about a fifth of a second. An
-        exit a fraction early is self-correcting: read_win_lane() finds
-        nothing legible yet and asks again.
+        Two ways of deciding, and which one is used depends on whether the
+        screen profile has a result_banner box.
+
+        With one the banner itself is the signal, and the floor is
+        banner_wait_min -- which is not a guess at when the race ends, only a
+        point safely past the screens between placing the bet and the race
+        starting. The banner says when.
+
+        Without one it falls back to stillness, which is the flaky thing this
+        replaced: the camera holds on the horses for anywhere from half a
+        second to three after the finish, so a quiet-frames test either fires
+        on that hold or has to have race_wait_min pushed out past the worst
+        case. Every race then paid for the worst case, every time.
         """
         if self.dry_run:
             return 0.0, True
+        if self._board.can_see_result_screen:
+            floor = self._timing.banner_wait_min
+            time.sleep(floor)
+            return self._wait_for_banner(floor)
         floor = self._timing.race_wait_min
         time.sleep(floor)
         spent, settled = self._screen.wait_settled(
@@ -151,6 +162,34 @@ class Machine:
             samples=self._timing.race_still_samples, floor=2.0,
             poll=self._timing.still_poll)
         return floor + spent, settled
+
+    def _wait_for_banner(self, floor: float) -> Tuple[float, bool]:
+        """Poll for the result screen's title banner, and return the moment
+        it is up.
+
+        Nothing waits for the screen to settle afterwards. The cards, the
+        prices and the banner all arrive together, so there is nothing to
+        settle for -- and a stillness check here was worse than useless: the
+        chip counter ticks up on this screen, so two consecutive quiet frames
+        often never came and the wait ran to its whole cap. If a lane number
+        ever is caught mid-draw, read_win_lane already asks again.
+
+        Two matching frames rather than one: a check costs about 7ms, so the
+        second is cheap insurance against a single odd frame -- a compression
+        artefact, or a grab caught mid-fade.
+        """
+        timing = self._timing
+        started = time.time()
+        deadline = started + (timing.race_wait_max - floor)
+        matched = 0
+        while time.time() < deadline:
+            matched = matched + 1 if self._board.sees_result_screen() else 0
+            if matched >= timing.result_frames:
+                return floor + (time.time() - started), True
+            time.sleep(timing.result_poll)
+        print("  (no RESULTS banner in the result box -- check it with "
+              "`python -m insidetrack result`)")
+        return floor + (time.time() - started), False
 
     def return_to_start(self) -> bool:
         """After the result: Down then Cross selects BET AGAIN, returning to

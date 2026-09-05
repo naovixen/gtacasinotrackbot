@@ -184,3 +184,53 @@ def stack(images, gap: int = PAD):
         boxes.append((0, cols, top, top + rows))
         top += rows + gap
     return canvas, boxes
+
+
+# --------------------------------------------------------------------------
+# The result screen's title banner
+#
+# Stillness is a bad proxy for "the race is over". The camera holds on the
+# horses for somewhere between half a second and three seconds after the
+# finish, so a quiet-frames test either fires on that hold or has to be
+# pushed out past the worst case -- which is what race_wait_min was really
+# paying for.
+#
+# The banner is the opposite kind of signal: it is only ever on screen when
+# the result screen is, it looks the same every race, and the two things
+# that DO differ from race to race -- which horse won and what the bet paid
+# -- are nowhere near it. So it is matched by colour rather than by OCR:
+# "RESULTS" in flat yellow on a near-black panel is two pixel counts, about
+# a millisecond, against ~20ms and a confidence to second-guess for a read.
+
+BANNER_DARK_MAX = 70        # every channel below this is panel, not backdrop
+BANNER_DARK_MIN = 0.55      # panel, as a fraction of the box
+BANNER_YELLOW_MIN = 0.02    # some lettering, or it is a plain black panel
+BANNER_YELLOW_MAX = 0.45    # and not so much that the box is mostly ink
+
+# The lettering. The last two terms are what keep the orange backdrop out:
+# it is red enough to pass the first, but its green channel is far too low,
+# and its lighter bands run orange rather than yellow -- red and green a
+# long way apart.
+_YELLOW_RED_MIN = 140
+_YELLOW_GREEN_MIN = 110
+_YELLOW_BLUE_MAX = 100
+_YELLOW_SPREAD_MIN = 90     # red over blue
+_YELLOW_BALANCE_MAX = 90    # red against green
+
+
+def banner_fractions(rgb: np.ndarray) -> Tuple[float, float]:
+    """(dark fraction, yellow fraction) of a captured box."""
+    pixels = rgb[:, :, :3].astype(np.int16)
+    red, green, blue = pixels[..., 0], pixels[..., 1], pixels[..., 2]
+    dark = pixels.max(axis=2) < BANNER_DARK_MAX
+    yellow = ((red > _YELLOW_RED_MIN) & (green > _YELLOW_GREEN_MIN)
+              & (blue < _YELLOW_BLUE_MAX)
+              & (red - blue > _YELLOW_SPREAD_MIN)
+              & (np.abs(red - green) < _YELLOW_BALANCE_MAX))
+    return float(dark.mean()), float(yellow.mean())
+
+
+def is_banner(dark: float, yellow: float) -> bool:
+    """Do those fractions say the result screen's title panel is showing?"""
+    return (dark >= BANNER_DARK_MIN
+            and BANNER_YELLOW_MIN <= yellow <= BANNER_YELLOW_MAX)

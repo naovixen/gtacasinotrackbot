@@ -73,6 +73,12 @@ class Bot:
         else:
             print(f"Logging every race to {self._log.path} "
                   f"(run {self._log.run_id}).")
+        if self._settings.board.result_banner_region is None:
+            print(f"NOTE: profile {self._settings.profile!r} has no "
+                  "result_banner box, so the end of a race is\n      guessed "
+                  "at from the picture going still. Measuring it lets "
+                  "race_wait_min\n      come down under the finish -- see "
+                  "`python -m insidetrack result`.")
         print("ScrollLock pauses at any time. Starting in 5s...")
         self._machine.ensure_window()
         time.sleep(5)

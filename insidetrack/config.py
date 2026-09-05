@@ -26,12 +26,15 @@ class Profile:
     """The boxes for one screen layout, measured off its own calibrate.png.
 
     bet_amount_region enables max-bet verification; win_lane_region enables
-    result grading. Either may be None on a screen not measured for it yet.
+    result grading; result_banner_region enables spotting the result screen
+    by its title banner instead of by waiting for the picture to stop
+    moving. Any of them may be None on a screen not measured for it yet.
     """
 
     odds_regions: Sequence[Region]
     bet_amount_region: Optional[Region] = None
     win_lane_region: Optional[Region] = None
+    result_banner_region: Optional[Region] = None
 
 
 @dataclass(frozen=True)
@@ -46,9 +49,9 @@ class Timing:
     after a region change is where drops actually happen -- then menu_tap_gap.
     """
 
-    menu_tap_gap: Band = (0.05, 0.06)     # between presses inside one region
-    transition_gap: Band = (0.4, 0.5)     # after a press that changes region
-    bet_tap_gap: Band = (0.065, 0.07)     # between bet-increase taps
+    menu_tap_gap: Band = (0.02, 0.03)     # between presses inside one region
+    transition_gap: Band = (0.3, 0.35)     # after a press that changes region
+    bet_tap_gap: Band = (0.02, 0.03)     # between bet-increase taps
     place_bet_gap: Band = (0.2, 0.3)      # bet row -> Place Bet: a crossing,
                                           # but a quiet one (the amount has
                                           # just been read off a static menu)
@@ -71,12 +74,31 @@ class Timing:
                                           # this is nearly the whole cadence
     still_samples: int = 2                # quiet frames that mean "stopped"
 
-    race_wait_min: float = 32.0           # never look for the result before
-    race_wait_max: float = 45.0           # give up waiting for stillness. A
+    race_wait_min: float = 33.0           # STILLNESS PATH ONLY: the floor has
+                                          # to clear the finish AND the 0.5-3s
+                                          # camera hold after it, because
+                                          # stillness cannot tell them apart
+    race_wait_max: float = 45.0           # give up waiting for the result. A
                                           # cap, not a speed knob
     race_still_samples: int = 3           # the result screen gets one more
                                           # than a menu: a camera cut mid-race
-                                          # can be quiet for two frames
+                                          # can be quiet for two frames.
+                                          # Stillness only, so unused once a
+                                          # result_banner is measured
+
+    banner_wait_min: float = 25.0         # BANNER PATH: not a guess at when
+                                          # the race ends -- the banner says
+                                          # that. Only a point safely past the
+                                          # screens between the bet and the
+                                          # start, so nothing before the race
+                                          # can be mistaken for the result.
+                                          # Looking early costs 7ms a poll
+    result_poll: float = 0.02             # between banner checks. One check is
+                                          # a small grab and two pixel counts,
+                                          # ~7ms, so this is about a third of
+                                          # the cadence
+    result_frames: int = 2                # matching frames that mean "up",
+                                          # against a one-frame fluke
     ocr_settle: float = 0.0
     double_read: bool = False             # second board read even when the
                                           # first one is confident
@@ -112,11 +134,19 @@ class Settings:
                 "Run `python -m insidetrack setup`.") from None
 
 
-# Betting. 100 -> 1000 in 100s (9 presses), 1000 -> 10000 in 500s (18) = 27,
-# plus one spare; the increase caps at $10,000 so an extra press is free.
+# Betting. 100 -> 1000 in 100s (9 presses), 1000 -> 10000 in 500s (18) = 27
+# to reach the cap from the minimum.
 MIN_BET = 100
 MAX_BET = 10_000
-MAX_BET_PRESSES = 28
+BET_PRESSES_TO_MAX = 27
+
+# Taps beyond the 27 that arithmetic needs. The increase caps at $10,000, so
+# every one of these is free insurance against a press the menu ate; raise it
+# if `verify_max_amount` keeps having to top up, lower it to shave time off
+# each bet. 0 means "tap exactly enough and trust every press to land".
+EXTRA_BET_PRESSES = 3
+
+MAX_BET_PRESSES = BET_PRESSES_TO_MAX + EXTRA_BET_PRESSES
 BET_INCREASE_MODE = "tap"      # "tap" | "hold" (one long press, menu repeats)
 BET_HOLD_SECONDS = 3.0
 

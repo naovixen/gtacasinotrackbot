@@ -27,6 +27,7 @@ race itself.
 - [Configuration](#configuration)
 - [When something goes wrong](#when-something-goes-wrong)
 - [How it works](#how-it-works)
+  - [Knowing the race is over](#knowing-the-race-is-over)
 
 ---
 
@@ -114,7 +115,7 @@ matters there is nothing to aim with. The picker draws a crosshair, magnifies
 the pixels under it at 8×, and previews the box you are drawing with its size,
 then draws each finished box back on the picture and asks you to confirm it.
 
-It asks for four things:
+It asks for five things:
 
 | put the game on… | and box… |
 | --- | --- |
@@ -122,15 +123,18 @@ It asks for four things:
 | the SINGLE EVENT board | lane 6's odds — top-left corner only |
 | a horse selected, **stake run up to $10,000** | the stake ($ figure) — both corners |
 | a race result | the winning horse's lane number — both corners |
+| the same race result | the RESULTS title panel — both corners |
 
 Lanes 2–5 are spaced evenly between 1 and 6 (they are evenly stacked, and
 measuring the two ends divides a spacing error by five instead of multiplying
 it by five). If they land wrong, answer no and it takes all six corners by
 hand.
 
-The last two boxes can be skipped and added later by running `setup` again —
-without the stake box, bets go on unverified; without the win-lane box, every
-race is logged ungraded and `stats` has nothing to report.
+The last two screens' boxes can be skipped and added later by running `setup`
+again — without the stake box, bets go on unverified; without the win-lane box,
+every race is logged ungraded and `stats` has nothing to report; without the
+RESULTS box, every race pays a few seconds waiting to be sure it is over (see
+[Knowing the race is over](#knowing-the-race-is-over)).
 
 ### Draw the boxes for the *widest* text, not the text in front of you
 
@@ -230,7 +234,7 @@ python -m insidetrack <command> [options]
 | `setup` | measure this screen's boxes and write `insidetrack.toml` |
 | `run` | place bets until stopped |
 | `read` | one board read, and what the strategy would do with it |
-| `result` | read the winning lane off a result screen |
+| `result` | read the winning lane off a result screen, and check the RESULTS box |
 | `probe` | save `calibrate.png` and `probe.png` to check the boxes |
 | `keys` | find which window chiaki-ng takes input on |
 | `tune` | check the timings against the real menu (~1 min, places no bets) |
@@ -276,7 +280,9 @@ believes the cursor is.
 
 **`result` only means anything on a result screen.** Run it while the board is
 up and it will happily read a horse's saddle number, because the box happens
-to sit there.
+to sit there. The `result banner:` line it prints is the exception, and worth
+checking both ways round — see
+[Knowing the race is over](#knowing-the-race-is-over).
 
 **chiaki-ng's keyboard mapping has to be live** for `postmessage` and
 `keyboard` modes: Cross = Enter, Circle = Backspace, which are the defaults.
@@ -327,6 +333,7 @@ odds = [
 ]
 bet_amount = [1315, 480, 140, 75]
 win_lane = [1405, 785, 80, 90]
+result_banner = [1210, 60, 480, 180]
 ```
 
 Boxes are `[left, top, width, height]` in pixels **from the top-left of the
@@ -369,6 +376,23 @@ odds, re-run `setup`. Check the window isn't covered.
 *and* after a loss. If it fails on both, the box is wrong; re-run `setup` and
 measure it on a result screen. Races logged without a winner are dead weight:
 they're excluded from `stats`, so the losses stop teaching you anything.
+
+**Every race takes the full `race_wait_max`, and the log says
+`settled=0`** — the `result_banner` box isn't matching, so the wait runs out
+instead of ending on the banner. Run `result` on a result screen: if it says
+`no match`, the box has orange backdrop in it or has missed the letters.
+Re-run `setup` and redraw it inside the panel.
+
+**`race_s` is identical in every row of the log** — nothing is being detected;
+that number is just the floor. If the screen has a `result_banner` box, lower
+`banner_wait_min` until `race_s` starts varying race to race. If it doesn't,
+that constant is the whole point of measuring one.
+
+**Races end early, on a screen with no result on it** — the opposite:
+something during the race is matching the `result_banner` box. Run `result` on
+the betting board and mid-race; anything but `no match` means the box is
+somewhere too generic. `race_wait_min` is the backstop for this, so raise it
+back to just inside the finish while you fix the box.
 
 **Navigation desyncs — bets land on the wrong horse** — raise
 `transition_gap` in `[timing]` first (the press right after a region change is
@@ -418,9 +442,10 @@ A few decisions that are load-bearing:
 
 **Nothing is timed by sleeping if it can be measured instead.** A press is
 confirmed by watching whether the screen reacted, and the end of a race is
-detected by the animation going still rather than by a fixed wait. The
-stillness test adapts to how much motion an animation actually showed, because
-a busy result screen never gets as quiet as an idle menu.
+read off the result screen itself rather than waited out — see
+[Knowing the race is over](#knowing-the-race-is-over). Where stillness is
+still the signal, the test adapts to how much motion an animation actually
+showed, because a busy result screen never gets as quiet as an idle menu.
 
 **All six lanes are read in one recognition pass.** They're stacked onto a
 single canvas and matched back by row, which takes ~130ms against ~1040ms for
@@ -437,6 +462,75 @@ harmless.
 **A bet is only placed from a screen we've proved we're on.** A trusted board
 read is that proof. Anything unproven backs out one screen and restarts the
 cycle, because the top of the loop is the thing that comes back in.
+
+### Knowing the race is over
+
+The race is the floor on cycle time — everything else in a cycle put together
+costs less than it does — so how the bot decides it has ended is worth more
+than any other timing in the config.
+
+Originally it decided by watching the picture stop moving. That looks right
+and isn't: **when a race finishes the camera holds on the horses for somewhere
+between half a second and three seconds** before the result screen comes up,
+and a held camera is exactly as still as a finished screen. Anything quick
+enough to catch the short hold fires during the long one, on a screen with no
+result on it; anything patient enough not to has to be patient in every race,
+including the ones where the hold was half a second. `race_wait_min` was
+paying for the worst case, every race.
+
+So the bot looks for the result screen instead. **The RESULTS title panel is
+the same every race** — a near-black box with yellow letters, at the top of
+the screen, nowhere near the two things that do differ (which horse won, and
+what the bet paid). The `result_banner` box is matched on those two colours:
+mostly near-black, some yellow in it. Not OCR — two pixel counts over a small
+crop, about a millisecond, so it can be asked twenty times a second for the
+whole wait and cost nothing. Two matching frames in a row are needed, against
+a single odd frame caught mid-fade.
+
+Nothing waits for the screen to settle afterwards. The cards, the prices and
+the banner all arrive together, so there is nothing to settle for — and a
+stillness check here is worse than useless, because the chip counter ticks up
+on this screen and two consecutive quiet frames often never come. If a lane
+number is ever caught mid-draw, `read_win_lane()` simply asks again.
+
+That splits the floor in two, because what it has to do depends on which
+signal ends the wait:
+
+| setting | used when | what it has to clear | default |
+| --- | --- | --- | --- |
+| `banner_wait_min` | there's a `result_banner` box | only the screens between the bet and the start | 25.0 |
+| `race_wait_min` | there isn't | the finish *and* the 0.5–3s camera hold after it | 33.0 |
+
+`banner_wait_min` is not a guess at when the race ends — the banner says that.
+One poll costs ~7ms, so looking early is close to free and it can come down a
+long way. Take it down in steps and watch the `race_s` column in
+`race_log.csv`: while `race_s` keeps landing on the same value every race, the
+floor is still what you're waiting on; once it starts varying race to race the
+banner has taken over and there is nothing left to win.
+
+Check the box with `python -m insidetrack result`, which prints what the
+matcher sees:
+
+```
+result banner: MATCHES  (90% near-black, 9% yellow)
+```
+
+Run it on a result screen and it should say `MATCHES`; run it on the betting
+board and it should not. Both halves matter — a box that matches everything
+ends the race wait the moment it starts looking. The one thing that breaks it
+is the orange backdrop leaking into the box, so keep it inside the panel.
+
+Without a `result_banner` box nothing changes: the wait falls back to
+stillness, `race_wait_min` has to stay generous, and the bot says so at
+startup.
+
+For scale, the pieces measured on this machine:
+
+| step | cost |
+| --- | --- |
+| one banner check (grab + two pixel counts) | 7 ms |
+| `read_win_lane()`, landing first try | 39 ms |
+| one full-window stillness frame | 30 ms |
 
 ### Files
 

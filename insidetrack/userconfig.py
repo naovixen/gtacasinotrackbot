@@ -244,10 +244,12 @@ def _profile(name: str, block: Mapping[str, Any]) -> Profile:
         bet_amount_region=_optional_region(f"{where}.bet_amount",
                                            block.get("bet_amount")),
         win_lane_region=_optional_region(f"{where}.win_lane",
-                                         block.get("win_lane")))
+                                         block.get("win_lane")),
+        result_banner_region=_optional_region(f"{where}.result_banner",
+                                              block.get("result_banner")))
 
 
-SCREEN_KEYS = {"odds", "bet_amount", "win_lane"}
+SCREEN_KEYS = {"odds", "bet_amount", "win_lane", "result_banner"}
 
 
 def _check_keys(where: str, block: Mapping[str, Any]) -> None:
@@ -482,6 +484,8 @@ def _screen_block(name: str, profile: Profile) -> str:
                            "the stake showing on the bet screen"))
     lines.append(_box_line("win_lane", profile.win_lane_region,
                            "winning horse's number, on the result screen"))
+    lines.append(_box_line("result_banner", profile.result_banner_region,
+                           "the RESULTS title panel -- says the race is over"))
     lines.append("")
     return "\n".join(lines)
 

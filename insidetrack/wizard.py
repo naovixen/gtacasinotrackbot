@@ -292,11 +292,18 @@ RESULT_STEP = """
 -- The result screen ----------------------------------------------------
 
   Place a bet (or just let a race run) and wait for the finish, so the
-  result screen shows the winning horse's LANE NUMBER.
+  result screen is showing -- the three cards, with RESULTS across the top.
 
-  The bot reads that number to grade every race, including the ones it
-  loses -- that is what makes the race log worth anything. Skipping it
-  means races are logged with no result.
+  Two boxes come off this one screen:
+
+    the WINNING HORSE'S NUMBER, which grades every race, including the
+    ones the bot loses -- that is what makes the race log worth anything;
+
+    the RESULTS title panel, which is how the bot knows the race is over.
+    Without it the wait has to guess from the picture going still, and the
+    camera holds on the horses for up to three seconds after the finish,
+    so every race pays for that worst case. Skipping it costs seconds a
+    race; skipping the lane number means races logged with no result.
 """
 
 
@@ -349,10 +356,11 @@ def _walk(args, target: Path) -> int:
 
     odds = _measure_odds(screen, mode, name)
     stake = _measure_stake(screen, mode, name, previous)
-    win_lane = _measure_win_lane(screen, mode, name, previous)
+    win_lane, banner = _measure_result(screen, mode, name, previous)
 
     profile = Profile(odds_regions=odds, bet_amount_region=stake,
-                      win_lane_region=win_lane)
+                      win_lane_region=win_lane,
+                      result_banner_region=banner)
     config = _merge(existing, name, profile, title, args)
     return _finish(config, target, name, screen, profile)
 
@@ -579,35 +587,107 @@ WIN_LANE_NOTE = (
     "creeping in is not.")
 
 
-def _measure_win_lane(screen: Screen, mode: str, name: str,
-                      previous: Optional[Profile]) -> Optional[Region]:
+BANNER_CHECK = ("Is the RESULTS panel -- black behind, yellow letters --\n"
+                "filling this box, with no orange backdrop in it?")
+BANNER_NOTE = (
+    "This box is never read as text. It is matched on two colours: mostly "
+    "near-black, with some yellow in it. So keep it INSIDE the panel -- the "
+    "orange backdrop leaking in is the one thing that breaks it -- and keep "
+    "the letters in, because a plain black panel is not a match either. "
+    "Anywhere across the middle of the title works.")
+
+
+def _measure_result(screen: Screen, mode: str, name: str,
+                    previous: Optional[Profile]):
+    """Both result-screen boxes off one capture: (win lane, banner).
+
+    One capture and one picker window for the two of them, because they are
+    on the same screen and asking twice would mean sitting through another
+    race to get back to it. Skipping either keeps whatever was measured
+    before, so an existing config can add the banner without redrawing the
+    lane number.
+    """
     print(RESULT_STEP)
-    if not _step_wanted("Measure the winning-lane box now?", previous
-                        and previous.win_lane_region):
-        return previous.win_lane_region if previous else None
-    return _one_box(screen, mode, name, "result",
-                    "the WINNING HORSE'S NUMBER -- just the digit",
-                    question=WIN_LANE_CHECK, note=WIN_LANE_NOTE)
+    win_lane = previous.win_lane_region if previous else None
+    banner = previous.result_banner_region if previous else None
+    if not _result_wanted(win_lane, banner):
+        return win_lane, banner
+    image = _wait_for_screen(screen, name, "result", mode)
+    session = _session(mode, screen, image, name, "result")
+    try:
+        win_lane = _pick_box(
+            session, "the WINNING HORSE'S NUMBER -- just the digit",
+            WIN_LANE_CHECK, WIN_LANE_NOTE) or win_lane
+        banner = _pick_box(
+            session, "the RESULTS TITLE -- inside the black panel, letters "
+            "included", BANNER_CHECK, BANNER_NOTE,
+            note_for=lambda region: _banner_note(image, region)) or banner
+    finally:
+        session.close()
+    return win_lane, banner
+
+
+def _result_wanted(win_lane: Optional[Region],
+                   banner: Optional[Region]) -> bool:
+    """Both boxes come off one screen, so they are offered together -- but
+    named separately, because the usual reason to be here is a config that
+    has the lane number from before this and no banner yet."""
+    have = [name for name, box in (("the winning lane", win_lane),
+                                   ("the RESULTS panel", banner)) if box]
+    if have:
+        print(f"  Already measured: {' and '.join(have)}.")
+    return _yes("  Measure the result-screen boxes now?", len(have) < 2)
+
+
+def _banner_note(image, region: Region) -> str:
+    """What the matcher makes of the box just drawn, on the captured still.
+
+    The box is checked here rather than left to the first race that needs
+    it: it is measured on the one screen that proves it, and a box that
+    reads 20% black is a five-second fix now against a run that quietly
+    waits out race_wait_max every race.
+    """
+    from . import vision
+    left, top, width, height = region
+    crop = image[top:top + height, left:left + width]
+    if crop.size == 0:
+        return "\n\nThat box falls outside the window."
+    dark, yellow = vision.banner_fractions(crop)
+    verdict = ("MATCHES -- the bot would call this the result screen."
+               if vision.is_banner(dark, yellow) else
+               "NO MATCH -- the bot would not recognise this as the result "
+               "screen. Draw it further inside the panel, or wide enough to "
+               "take in the letters.")
+    return (f"\n\n{dark:.0%} near-black, {yellow:.0%} yellow: {verdict}")
 
 
 def _one_box(screen: Screen, mode: str, name: str, tag: str, what: str,
              question: str, note: str = "", yes: str = "Yes, use it",
              no: str = "No, do it again") -> Optional[Region]:
-    """One box, drawn back onto the picture and checked before it is kept."""
+    """One box on a screen of its own: capture, draw, check, keep."""
     image = _wait_for_screen(screen, name, tag, mode)
     session = _session(mode, screen, image, name, tag)
     try:
-        while True:
-            region = _box(session, what, allow_skip=True)
-            if region is None:
-                return None
-            print(f"      box {list(region)}")
-            session.show([region])
-            if session.confirm(question, yes=yes, no=no, boxes=[region],
-                               note=note):
-                return region
+        return _pick_box(session, what, question, note, yes, no)
     finally:
         session.close()
+
+
+def _pick_box(session, what: str, question: str, note: str = "",
+              yes: str = "Yes, use it", no: str = "No, do it again",
+              note_for=None) -> Optional[Region]:
+    """One box in an open session, drawn back onto the picture and checked
+    before it is kept. `note_for` adds what the box measures to the check."""
+    while True:
+        region = _box(session, what, allow_skip=True)
+        if region is None:
+            return None
+        print(f"      box {list(region)}")
+        session.show([region])
+        extra = note_for(region) if note_for else ""
+        if session.confirm(question, yes=yes, no=no, boxes=[region],
+                           note=note + extra):
+            return region
 
 
 def _step_wanted(question: str, already: Optional[Region]) -> bool:

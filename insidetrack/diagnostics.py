@@ -20,7 +20,8 @@ from .strategy import decide
 FRAME_S = 0.033
 BOARD_READ_S = 0.20
 MONEY_READ_S = 0.12
-DIGIT_READ_S = 0.10
+DIGIT_READ_S = 0.04         # measured: one read_win_lane that lands first try
+BANNER_CHECK_S = 0.008      # measured: one sees_result_screen, grab included
 CONFIRM_S = 0.5
 PROFIT_PER_RACE = 4917.0        # measured over his 547 races, see validate.py
 
@@ -44,7 +45,8 @@ def probe(app: App) -> None:
           f"{window.width}x{window.height}")
     print("  calibrate.png -- plain capture, measure new boxes off this one")
     print("  probe.png     -- red on the six odds, blue on the bet amount, "
-          "yellow on the win lane")
+          "yellow on the win\n                   lane, green on the RESULTS "
+          "banner")
 
 
 def _draw_boxes(image: Image.Image, profile) -> None:
@@ -53,6 +55,7 @@ def _draw_boxes(image: Image.Image, profile) -> None:
         _box(draw, region, f"lane {index}", (255, 0, 0))
     _box(draw, profile.bet_amount_region, "bet amount", (0, 80, 255))
     _box(draw, profile.win_lane_region, "win lane", (255, 200, 0))
+    _box(draw, profile.result_banner_region, "result banner", (0, 220, 80))
 
 
 def _box(draw: ImageDraw.ImageDraw, region, label: str, colour) -> None:
@@ -76,9 +79,11 @@ def read_board(app: App) -> None:
 
 
 def read_result(app: App) -> None:
-    """One read of the result screen, for checking win_lane_region."""
+    """One read of the result screen: who won, and whether the bot would
+    have known it was looking at a result screen at all."""
     app.machine.ensure_window()
     time.sleep(1.0)
+    _report_banner(app)
     if app.settings.board.win_lane_region is None:
         print(f"Screen {app.settings.profile!r} has no win_lane box. "
               "Measure it with `python -m insidetrack setup --screen "
@@ -94,6 +99,26 @@ def read_result(app: App) -> None:
     else:
         print(f"win lane: {lane}")
     print(f"({time.time() - started:.2f}s)")
+
+
+def _report_banner(app: App) -> None:
+    """What the result-screen matcher makes of what is on screen now.
+
+    Run it on a result screen and it should say MATCHES; run it on the
+    betting board and it should not. Both halves matter -- a box that
+    matches everything ends the race wait the moment it starts looking.
+    """
+    if app.settings.board.result_banner_region is None:
+        print(f"Screen {app.settings.profile!r} has no result_banner box, so "
+              "the race wait falls back\nto watching for the picture to go "
+              "still -- which the camera holding on the\nhorses after the "
+              "finish makes flaky, and which is why race_wait_min has to\nbe "
+              "generous. Measure it with `python -m insidetrack setup "
+              f"--screen\n{app.settings.profile}` on a result screen.\n")
+        return
+    dark, yellow, matched = app.board.result_signature()
+    print(f"result banner: {'MATCHES' if matched else 'no match'}  "
+          f"({dark:.0%} near-black, {yellow:.0%} yellow)")
 
 
 def keys(app: App) -> None:
@@ -147,8 +172,19 @@ def _ocr_cost(timing: Timing) -> float:
             + MONEY_READ_S + DIGIT_READ_S)
 
 
-def _race_cost(timing: Timing) -> float:
-    """The floor, plus the stillness check that ends it."""
+def _race_cost(timing: Timing, banner: bool) -> float:
+    """The floor, plus whatever ends the wait.
+
+    The banner path's floor is only a guard against the pre-race screens, so
+    what it really costs is the rest of the race -- which this cannot know,
+    and which the log has instead. Modelled here as the poll that catches
+    the banner and the one that confirms it. Without a banner box the floor
+    has to clear the pause after the finish as well, and that part is not
+    measurable in advance either.
+    """
+    if banner:
+        return (timing.banner_wait_min
+                + (timing.result_poll + BANNER_CHECK_S) * 1.5)
     return timing.race_wait_min + timing.race_still_samples * FRAME_S + 0.2
 
 
@@ -161,8 +197,9 @@ def budget(app: App) -> None:
     ~$4,900 a race; whether that lands in the 500-800k/h band is entirely a
     question of how many races an hour this loop manages."""
     timing = app.settings.timing
+    banner = app.settings.board.result_banner_region is not None
     parts = {"nav": _navigation_cost(timing), "betspam": _spam_cost(timing),
-             "ocr": _ocr_cost(timing), "race": _race_cost(timing)}
+             "ocr": _ocr_cost(timing), "race": _race_cost(timing, banner)}
     total = sum(parts.values())
     rate = 3600 / total
     print(f"Cycle-time model for the {TIMING_NAME!r} timings\n")
@@ -171,8 +208,12 @@ def budget(app: App) -> None:
           + f"  = {total:5.1f}s/race -> {rate:5.1f} races/h "
             f"-> ${rate * PROFIT_PER_RACE:,.0f}/h")
     print("\n  His claim: 103 races/h ($506k/h). The race itself is the "
-          "floor, and it is\n  measured rather than guessed -- the loop "
-          "watches for the animation to stop\n  instead of sleeping a fixed "
-          "time, so the race column is an estimate and the\n  log has the "
-          "truth. If the real cycle is much worse than this, the bet spam "
-          "or\n  a transition_gap is where the time is going.")
+          "floor, and it ends\n  when the result is on screen rather than "
+          "after a fixed sleep, so the race\n  column is an estimate and the "
+          "log has the truth. If the real cycle is much\n  worse than this, "
+          "the bet spam or a transition_gap is where the time is going.")
+    if not banner:
+        print("\n  No result_banner box on this screen, so the race wait is "
+              "watching for the\n  picture to go still, and race_wait_min has "
+              "to cover the pause after the\n  finish as well. Measuring one "
+              "is what lets that number come down.")
