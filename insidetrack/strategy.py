@@ -16,6 +16,38 @@ validate.py` reproduces every number.
 
   Measured: +50.6% ROI, ~$4,900 profit per race.
 
+Replayed against our own race_log.csv -- 185 races over 4 runs on 2026-09-05,
+the first log clean enough to trust -- the same rules return +56.7% ROI and
++$5,512 a race. That is ahead of the 547-race figure, but the gap (+$578 a
+race, 95% CI -2,325..+3,497) sits well inside the noise.
+
+  DO NOT RE-FIT PICK_ORDER ON OUR OWN LOG YET. Enumerated over all 1,956
+  orderings of the six prices, the order above comes first on the 732
+  combined races, at +$5,068 a race. Fit on our 185 races alone the search
+  picks 4/1 > 3/1 > 5/1 > 6/1 > EVENS > 2/1 instead: +$7,620 a race
+  in-sample, and +$2,303 on the 547 against this order's +$4,917. That is
+  chart mode's mistake wearing a different hat, and a short log invites it
+  every time.
+
+  EVENS is the specific trap. It reads soft -- 49.3% of the 67 times it
+  appeared against a 50% break-even, and 45.2% in an earlier log since
+  deleted for OCR errors -- and both readings are noise around a price worth
+  +$1,240 a race to back on the combined set, where the best alternative on
+  those same boards is worth -$1,281. Its own two datasets disagree in
+  opposite directions, which is the tell.
+
+  Rule 3's tiebreak has the same shape: plain 1,2,3,4,5,6 beat 3,2,1,6,5,4
+  by +$1,183 a race on our log, on the 10 races where it changed the pick.
+  Over the combined set that is +$205 a race, CI -396..+819.
+
+  Per-race SD is $17,124 against a $5,068 mean, so telling apart two
+  orderings that differ by $500 a race needs ~4,500 races -- about 51 hours
+  at 40.7s a race. Until then the 547 is still the better evidence.
+
+  Rule 4 has never fired: no board in the 732 has had all six horses at 6/1
+  or longer, because none has lacked a horse at 5/1 or shorter. Kept for the
+  board that eventually does.
+
 "chart" restores the per-(track, horse) ROI tables. They look better
 in-sample (+57.4%) and are worse in reality: +38.2% under 5-fold cross-
 validation, and +53.1% against pickorder's +69.0% on the 132 races recorded
