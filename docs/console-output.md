@@ -19,10 +19,10 @@ time      lane     1       2       3       4       5       6
           bet      lane 1  EVENS   MAX     10,000
           result   lane 1  EVENS   WON     +10,000
           session  1/1 won                 +10,000
-          session  37.4s/r    +100.0% ROI  +374,000/h
+          session  37.4s      +100.0% ROI  +374,000/h
 ```
 
-`37.4s/r` is seconds per race, end to end. `+374,000/h` is what that rate
+`37.4s` is seconds per race, end to end. `+374,000/h` is what that rate
 implies at the strategy's average return per race — not what this session has
 actually made; the realised figure is the running net on the line above.
 
