@@ -1,8 +1,8 @@
-"""Reading race_log.csv back: what OUR bets have actually returned.
+"""Reading data/race_log.csv back: what OUR bets have actually returned.
 
 The table this file exists for is what_won(): every race says which PRICE
 won, whether or not we backed it, so it measures each horse the way
-validate.py measures the 547-race log -- flat-bet ROI for backing that price
+analysis/validate.py measures the 547-race log -- flat-bet ROI for backing
 every time it appears -- on boards we read ourselves. That, not the ROI on
 our own picks, is what PICK_ORDER should eventually be rebuilt from.
 """

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Sequence
 
+from . import paths
 from .config import Settings
 from .strategy import grade
 
@@ -25,8 +26,7 @@ FIELDS = [
     "trusted", "race_s", "cycle_s", "settled",
 ]
 
-DEFAULT_PATH = os.path.join(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))), "race_log.csv")
+DEFAULT_PATH = paths.data_path("race_log.csv")
 
 
 @dataclass

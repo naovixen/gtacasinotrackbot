@@ -23,7 +23,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional, Tuple
 
-from . import userconfig
+from . import paths, userconfig
 from .config import Profile, Region
 from .screen import Screen, WindowMissing
 from .userconfig import ConfigError, UserConfig
@@ -706,7 +706,7 @@ def _wait_for_screen(screen: Screen, name: str, tag: str, mode: str):
     """
     _ask("  Press Enter once that screen is showing... ")
     image = screen.grab_window()
-    shot = Path(f"setup-{name}-{tag}.png")
+    shot = Path(paths.out_path(f"setup-{name}-{tag}.png"))
     try:
         from PIL import Image
         Image.fromarray(image).save(shot)
@@ -764,7 +764,7 @@ def _draw_check(screen: Screen, profile: Profile, name: str) -> None:
         from .diagnostics import _draw_boxes
         image = Image.fromarray(screen.grab_window())
         _draw_boxes(image, profile)
-        out = Path(f"setup-{name}-check.png")
+        out = Path(paths.out_path(f"setup-{name}-check.png"))
         image.save(out)
         print(f"Open {out}: red boxes should sit on the six odds, blue on "
               "the stake,\nyellow on the winning lane (whichever of those "

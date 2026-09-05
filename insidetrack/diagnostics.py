@@ -6,7 +6,7 @@ import time
 
 from PIL import Image, ImageDraw
 
-from . import console
+from . import console, paths
 from .app import App
 from .backends import PostMessageBackend, post_key
 from .config import (BET_HOLD_SECONDS, BET_INCREASE_MODE, MAX_BET_PRESSES,
@@ -31,22 +31,24 @@ def window_shot(app: App) -> Image.Image:
 
 
 def probe(app: App) -> None:
-    """Save calibrate.png (what the window looks like) and probe.png (the
-    same with this profile's boxes drawn on). Run it on the betting board to
-    check the odds boxes, and again on a result screen for the win lane."""
+    """Save out/calibrate.png (what the window looks like) and out/probe.png
+    (the same with this profile's boxes drawn on). Run it on the betting
+    board to check the odds boxes, and again on a result screen for the win
+    lane."""
     app.machine.ensure_window()
     time.sleep(1.0)
     window = app.screen.window()
     image = window_shot(app)
-    image.save("calibrate.png")
+    image.save(paths.out_path("calibrate.png"))
     _draw_boxes(image, app.settings.board)
-    image.save("probe.png")
+    image.save(paths.out_path("probe.png"))
     print(console.head(f"Profile {app.settings.profile!r}")
           + f": {window.title!r} at {window.width}x{window.height}")
-    print("  calibrate.png -- plain capture, measure new boxes off this one")
-    print("  probe.png     -- red on the six odds, blue on the bet amount, "
-          "yellow on the win\n                   lane, green on the RESULTS "
-          "banner")
+    print("  out/calibrate.png -- plain capture, measure new boxes off this "
+          "one")
+    print("  out/probe.png     -- red on the six odds, blue on the bet "
+          "amount, yellow on the\n                       win "
+          "lane, green on the RESULTS banner")
 
 
 def _draw_boxes(image: Image.Image, profile) -> None:
@@ -97,7 +99,7 @@ def read_result(app: App) -> None:
     if lane is None:
         print(console.bad("win lane: UNREADABLE") + f" (raw {raw!r})")
         print(console.note("  the box should hold just the winning horse's "
-                           "number; check probe.png"))
+                           "number; check out/probe.png"))
         print(console.note("  against a result screen."))
     else:
         print(f"win lane: {console.key(str(lane))}")

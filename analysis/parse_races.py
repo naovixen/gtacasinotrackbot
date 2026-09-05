@@ -52,14 +52,14 @@ def parse_log(text):
 
 
 def find(name):
-    """Locate a post file whether it sits beside the script or in post-info/."""
-    here = pathlib.Path(__file__).parent
-    for cand in (here / name, here / "post-info" / name):
+    """Locate a post file: post-info/ first, then anywhere in the checkout."""
+    root = pathlib.Path(__file__).resolve().parent.parent
+    for cand in (root / "post-info" / name, root / name):
         if cand.exists():
             return cand
-    hits = list(here.rglob(name))
+    hits = list(root.rglob(name))
     if not hits:
-        raise FileNotFoundError(f"{name} not found under {here}")
+        raise FileNotFoundError(f"{name} not found under {root}")
     return hits[0]
 
 

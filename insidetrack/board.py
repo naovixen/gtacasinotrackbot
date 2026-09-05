@@ -10,7 +10,7 @@ only for a lane whose text will not parse.
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from . import console
+from . import console, paths
 from . import ocr as ocr_module
 from . import vision
 from .config import CONF_TRUST, RECHECK_CONF, Settings
@@ -215,4 +215,4 @@ def _report(reads: Dict[int, LaneRead]) -> None:
 
 def _save(image, name: str) -> None:
     from PIL import Image
-    Image.fromarray(image).save(name)
+    Image.fromarray(image).save(paths.out_path(name))

@@ -1,8 +1,8 @@
 """GTA Online Inside Track auto-bettor -- entry point.
 
 The bot itself lives in the `insidetrack` package now; this file is the way
-in, and the compatibility surface for validate.py, which imports it to score
-the shipped strategy against the 547-race log.
+in, and the compatibility surface for analysis/validate.py, which imports
+it to score the shipped strategy against the 547-race log.
 
     python inside_track_bot.py setup              measure the boxes, first
     python inside_track_bot.py run --screen 4k
@@ -32,7 +32,7 @@ from insidetrack.strategy import decide as _decide
 __all__ = ["decide", "grade", "STRATEGY", "PICK_ORDER", "LANE_TIEBREAK",
            "SKIP_LANE", "CHART_NO1", "CHART_NO12", "CHART_NO123", "main"]
 
-# validate.py sets this on the module and then calls decide(); the package
+# analysis/validate.py sets this on the module and calls decide(); the package
 # takes the strategy as an argument instead, so this is the bridge.
 STRATEGY = "pickorder"
 

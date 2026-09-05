@@ -1,7 +1,7 @@
 """Which horse to back, and what a finished race was worth.
 
 Validated against the 547-race log in post-info/SecondPost.md; `python
-validate.py` reproduces every number.
+analysis/validate.py` reproduces every number.
 
   1. TWO horses at EVENS -> skip with a minimum bet. Betting one of two
      EVENS returned -25% ROI over the 16 such races: the pair splits the win
@@ -16,10 +16,10 @@ validate.py` reproduces every number.
 
   Measured: +50.6% ROI, ~$4,900 profit per race.
 
-Replayed against our own race_log.csv -- 185 races over 4 runs on 2026-09-05,
-the first log clean enough to trust -- the same rules return +56.7% ROI and
-+$5,512 a race. That is ahead of the 547-race figure, but the gap (+$578 a
-race, 95% CI -2,325..+3,497) sits well inside the noise.
+Replayed against our own data/race_log.csv -- 185 races over 4 runs on
+2026-09-05, the first log clean enough to trust -- the same rules return
++56.7% ROI and +$5,512 a race. That is ahead of the 547-race figure, but
+the gap (+$578 a race, 95% CI -2,325..+3,497) sits well inside the noise.
 
   DO NOT RE-FIT PICK_ORDER ON OUR OWN LOG YET. Enumerated over all 1,956
   orderings of the six prices, the order above comes first on the 732

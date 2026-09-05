@@ -53,7 +53,7 @@ HELP = {
     "run": "place bets until stopped (ScrollLock pauses)",
     "read": "one board read, and what the strategy would do with it",
     "result": "read the winning lane off a result screen",
-    "probe": "save calibrate.png and probe.png to check the boxes",
+    "probe": "save out/calibrate.png and out/probe.png to check the boxes",
     "keys": "find which window chiaki-ng takes input on",
     "tune": "check the timings against the real menu (~1 min)",
     "budget": "model cycle time and $/hour from the timings",

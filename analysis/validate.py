@@ -1,16 +1,20 @@
 """
 Validate the Inside Track strategy against the raw race log.
-    python validate.py            # full report
-    python validate.py --quick    # skip the bootstrap and cross-validation
+    python analysis/validate.py            # full report
+    python analysis/validate.py --quick    # skip bootstrap + cross-validation
 
 Everything here is measured on the 547 races the Reddit author transcribed
 in post-info/SecondPost.md, using his own accounting: stake 100 per bet, a
 win on an n/1 horse returns (n+1)x, only the slot marked 'w' pays.
 """
 import itertools
+import pathlib
 import random
 import statistics
 import sys
+
+# This lives in analysis/; inside_track_bot sits one level up.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from parse_races import load
 import inside_track_bot as bot

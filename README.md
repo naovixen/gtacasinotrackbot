@@ -3,277 +3,102 @@
 An auto-bettor for GTA Online's **Inside Track** horse racing machine, driving
 a PS5 over [chiaki-ng](https://github.com/streetpea/chiaki-ng) Remote Play.
 
-It watches the betting board through screen capture, reads the six horses'
-odds with OCR, picks one, walks the menus to place a maximum bet, waits out
-the race, reads the winning lane off the result screen, logs the whole thing,
-and starts again. Around 47 seconds a race, unattended — most of which is the
-race itself.
+It watches the betting board, reads the six horses' odds, picks one, places a
+maximum bet, waits out the race, records the result, and starts again. Around
+47 seconds a race, unattended.
 
 > **This automates a live GTA Online money faucet. It violates Rockstar's
 > Terms of Service, and people get banned and wiped for it.** Nothing in this
 > repo changes that. Supervise it, and don't run it on an account you care
 > about.
 
----
-
-## Contents
-
-- [Does it actually work?](#does-it-actually-work)
-- [What you need](#what-you-need)
-- [Setup](#setup)
-- [Running it](#running-it)
-- [Commands](#commands)
-- [Quirks worth knowing before you start](#quirks-worth-knowing-before-you-start)
-- [Configuration](#configuration)
-- [When something goes wrong](#when-something-goes-wrong)
-- [How it works](#how-it-works)
-  - [Knowing the race is over](#knowing-the-race-is-over)
-
----
-
-## Does it actually work?
-
-The strategy is a published rule, replayed here over its author's own 547-race
-log (`post-info/`). `python validate.py` reproduces every number below.
-
-| strategy | ROI | $/race |
-| --- | --- | --- |
-| **pickorder** (the default) | **+50.6%** | **$4,917** |
-| always the lowest odds | +42.2% | $4,223 |
-| always track 3 | +29.6% | $2,962 |
-| random lane | +12.6% | $1,261 |
-
-The edge is real: every favourite wins more often than its price implies.
-EVENS wins 56.2% of the time against a 50% break-even, 2/1 wins 45.0% against
-33.3%, 4/1 wins 30.3% against 20.0%. Anything at 6/1 or longer is at or below
-break-even and gets skipped.
-
-Bootstrapping those 547 races 5,000× puts the rule's 95% interval at **+36.5%
-to +65.5% ROI** — so expect a lot of variance. 547 races is not many, and an
-hour well below the average is a normal outcome rather than a broken bot.
-
-Throughput is the other half, and it is the half you control. The median cycle
-over the 473 races in this repo's own `race_log.csv` is **47s, or ~76 races an
-hour**, which puts the ROI interval at roughly **$270k–$480k/h**. `budget`
-models the same figure from your timings and comes out optimistic (~85/h),
-because it estimates the race wait rather than measuring it — the log is the
-truth. Published claims of 103 races/h are faster than this gets.
-
-The rule itself:
-
-1. **Two horses at EVENS** → skip, minimum bet. The pair splits the win
-   probability; backing one of them returned −25% over the 16 such races.
-2. Otherwise back the first price present in **EVENS > 2/1 > 4/1 > 3/1 > 5/1**
-   and max-bet it. (4/1 really does beat 3/1: close win rates, 5× vs 4× payout.)
-3. Duplicates of the chosen price → lane 3, 2, 1, 6, 5, 4 in that order.
-4. **Nothing better than 6/1** → skip, minimum bet.
-
-There is a second strategy, `chart`, kept only for comparison. It looks better
-in-sample (+57.4%) and is worse in reality (+38.2% cross-validated). Don't run
-it for money.
+Roughly **$270k–$480k an hour**, with a lot of variance — an hour well below
+that is normal, not a broken bot.
+[The numbers, and where they come from →](docs/strategy.md)
 
 ---
 
 ## What you need
 
-- **Windows.** Screen capture, the input backends and the window handling are
-  all Win32.
-- **Python 3.11+** (3.13 is what it is developed against — `tomllib` is stdlib
-  from 3.11).
-- **chiaki-ng**, streaming your PS5, with GTA Online open.
-- Python packages:
+- **Windows** and **Python 3.11+**
+- **chiaki-ng**, streaming your PS5, with GTA Online open
+- The Python packages:
+
   ```
   pip install easyocr opencv-python numpy mss pygetwindow pillow
   ```
-  `easyocr` pulls in PyTorch and is the big one; the first run downloads its
-  models. `tkinter` ships with Python on Windows and is used by the setup
-  wizard.
-- Optional, only for the fallback input modes:
-  `vgamepad` (gamepad mode, needs [ViGEmBus](https://github.com/nefarius/ViGEmBus))
-  and `pydirectinput` (keyboard mode).
+
+  `easyocr` is the big one — it pulls in PyTorch, and the first run downloads
+  its models.
 
 ---
 
-## Setup
+## Setting it up
 
-Where things sit on screen are pixel coordinates inside *your* chiaki-ng
-window at *your* window size, so they cannot ship with the code. Nothing runs
-until they are measured. One command does it:
+**1. Tell it where things are on your screen.** The bot works from pixels in
+your chiaki-ng window, so it has to be shown where to look. This takes about
+two minutes and only has to be done once:
 
 ```
 python -m insidetrack setup
 ```
 
-It tells you which game screen to be on and you press Enter; it grabs the
-window and opens **that still picture in a window of its own**, where you
-click the corners of each box. Roughly two minutes, and nothing is written
-until the end.
+It walks you through five screens — put the game on the one it names, press
+Enter, and click the corners of the box it asks for. It grabs a still picture
+to click on, so the game can carry on in the background.
 
-Clicking happens on the still rather than the live game because **chiaki-ng
-hides the mouse pointer while it is streaming** — over the one window that
-matters there is nothing to aim with. The picker draws a crosshair, magnifies
-the pixels under it at 8×, and previews the box you are drawing with its size,
-then draws each finished box back on the picture and asks you to confirm it.
+> **One thing that catches everyone:** draw each box around the *widest* text
+> it will ever hold, not the text you can see right now. A box drawn snugly
+> around `2/1` will clip every `EVENS` from then on. Extra room inside a box
+> costs nothing.
+> [Why this matters →](docs/calibration.md#draw-the-boxes-for-the-widest-text-not-the-text-in-front-of-you)
 
-It asks for five things:
-
-| put the game on… | and box… |
-| --- | --- |
-| the SINGLE EVENT board | lane 1's odds — both corners |
-| the SINGLE EVENT board | lane 6's odds — top-left corner only |
-| a horse selected, **stake run up to $10,000** | the stake ($ figure) — both corners |
-| a race result | the winning horse's lane number — both corners |
-| the same race result | the RESULTS title panel — both corners |
-
-Lanes 2–5 are spaced evenly between 1 and 6 (they are evenly stacked, and
-measuring the two ends divides a spacing error by five instead of multiplying
-it by five). If they land wrong, answer no and it takes all six corners by
-hand.
-
-The last two screens' boxes can be skipped and added later by running `setup`
-again — without the stake box, bets go on unverified; without the win-lane box,
-every race is logged ungraded and `stats` has nothing to report; without the
-RESULTS box, every race pays a few seconds waiting to be sure it is over (see
-[Knowing the race is over](#knowing-the-race-is-over)).
-
-### Draw the boxes for the *widest* text, not the text in front of you
-
-This is the one thing that catches people. Each box is measured against
-whatever the screen happens to show at that moment and then read forever
-against everything else it can show.
-
-- **Odds.** Lane 1's box sets the width for all six lanes. `EVENS` is five
-  characters, `2/1` is three — a box drawn snugly around a `2/1` clips every
-  `EVENS` from then on, and `EVENS` may not even be on the board while you are
-  measuring. So take the right edge out into the empty space, stopping short of
-  the horse's number diamond.
-- **Stake.** The panel opens on `$100` and the bot runs it up to `$10,000` —
-  four characters against seven — and `$10,000` is the *only* figure that box
-  is ever read for. Run the stake up before measuring (Right onto the increase
-  arrow, hold Cross), or leave room for three more digits and a comma.
-
-Spare room inside a box is free: the reader crops to the ink before
-recognising it, so an over-wide box reads identically — it still gets 6/6
-lanes right with every box shifted up to 14px in any direction. Clipping is
-not free. The wizard asks about both of these explicitly, with the box drawn.
-
-### If you'd rather not use the wizard
+**2. Check it worked.**
 
 ```
-python -m insidetrack setup --example   # drops insidetrack.toml to fill in
-python -m insidetrack setup --manual    # same walkthrough, typed coordinates
-python -m insidetrack setup --point     # hover the live screen, press F8
-```
-
-`insidetrack.example.toml` is the commented template. `--manual` saves each
-screen as `setup-<name>-<step>.png` and asks you to type coordinates read off
-it — `setup` falls back to this by itself if no window system is available.
-`--point` is hover-and-press, which works but fights the hidden cursor.
-
-### Then check it
-
-```
-python -m insidetrack probe    # calibrate.png + probe.png with the boxes drawn
+python -m insidetrack probe    # saves a picture with the boxes drawn on
 python -m insidetrack read     # one board read, and what it would bet
-python -m insidetrack keys     # confirm input reaches the PS5
-python -m insidetrack tune     # ~1 min: do the timings hold up
+python -m insidetrack keys     # confirm the PS5 is receiving input
 ```
 
-`probe.png` draws red on the six odds, blue on the stake, yellow on the
-winning lane. `keys` sends Right/Right/Left/Left to each candidate window in
-turn so you can see which one the PS5 listens on — click away from chiaki-ng
-first, so a pass only counts if it worked unfocused.
+Open `out/probe.png` — the coloured boxes should sit on the odds, the stake
+and the winning lane.
+
+[Full setup guide →](docs/calibration.md)
 
 ---
 
 ## Running it
 
-Rehearse first. `--dry` decides and logs but sends no input at all:
+**Rehearse first.** `--dry` decides and logs but sends no input at all:
 
 ```
 python -m insidetrack run --dry
 ```
 
-Open the SINGLE EVENT board by hand and let it read a few boards; check the
-decisions look sensible. Then, for real:
+Open the SINGLE EVENT board by hand, let it read a few boards, and check the
+decisions look sensible. Then, for real — start it from the machine's start
+screen:
 
 ```
 python -m insidetrack run
 ```
 
-Start it from the machine's start screen. Per race it prints the odds it read,
-what it decided, the result, and a running session tally:
+**ScrollLock pauses it** at any time, from any window, even while you're using
+something else. Turn it off to resume. **Ctrl-C stops it.**
+
+You don't need to keep chiaki-ng focused, so you can carry on using the PC —
+but the window has to stay **visible and unobscured**. Don't drag anything
+over the stream, and don't minimise it.
+
+Every race is written to `data/race_log.csv`. To see how you're actually
+doing:
 
 ```
-profile   second
-strategy  pickorder
-timings   trimmed
-input     postmessage
-log       E:\gtacasinotrackbot\race_log.csv
-race end  on the RESULTS banner
-keys      ScrollLock pauses, Ctrl-C stops
-
-time      lane     1       2       3       4       5       6
-21:04:12  board    EVENS   5/1     13/1    4/1     26/1    20/1
-          bet      lane 1  EVENS   MAX     10,000
-          result   lane 1  EVENS   WON     +10,000
-          session  1/1 won                 +10,000
-          session  37s cycle  +100.0% ROI  +374,000/h
+python -m insidetrack stats
 ```
 
-The settings are a line each, flush left with the timestamps below them. Only
-the settings: which HWND the keys go to and what to do if the menu doesn't move
-is first-run troubleshooting, and it was printing in full before every run
-after that too. The two input modes that carry a real caution rather than a
-description still get it as small print under the value — a virtual pad is
-system-wide, and keyboard mode types into whatever is focused.
-
-The races are a grid, because that's output you scan for hours rather than
-read. Five rules hold the grid together:
-
-- **Money reads down one column.** The stake, the race's profit, the running
-  net and the hourly rate all start in the same place, which is what decides
-  the field widths on the session line rather than the other way round.
-- **One cell width for everything.** Every value sits in an 8-column cell —
-  wide enough for `lane 1`, the longest of them, plus a two-space gap — so the
-  prices on a `bet` row land in the same columns as the prices on the `board`
-  row above it. Per-column widths were internally correct and still read as
-  ragged.
-- **Nothing runs past the width of a board row** (64 columns — five padded
-  cells and a sixth as long as the price in it). A longer message wraps onto
-  the next line, still on the grid.
-- **Nothing is ever appended to a line.** Warnings and errors get their own
-  row, tagged and coloured — including the ones from the machine and the
-  controller, which is why `recovering` no longer sits at its own indent.
-- **At most one thing per line is bright**, and it's the thing you're scanning
-  for: the backed price on the board row, `MAX`/`MIN` on the bet row,
-  `WON`/`LOST` and what it made on the result row, the running net on the
-  session row. Timestamps, tags, units and asides are grey and recede.
-
-`bet` and `result` share their cells deliberately. What you backed sits
-directly above what won, so whether they match is a matter of the two lines
-*looking* the same rather than of reading either of them.
-
-There's no `$` on the amounts — every figure is in the same chips, so a symbol
-on each one is a column of noise that says nothing and pushes the digits out of
-line as soon as a sign appears next to it.
-
-Colour turns itself off when it would be noise: piped or redirected output, or
-`NO_COLOR` set ([no-color.org](https://no-color.org)). `--no-colour` forces
-plain text, `FORCE_COLOR=1` forces it on. On Windows the console understands
-ANSI but starts with it switched off, so the bot enables it once at startup —
-that covers PowerShell in both Windows Terminal and the older console host, and
-only ASCII is used, so there's nothing for a code page to mangle.
-
-**ScrollLock pauses it**, at any time, from any window — it reads the toggle
-state, so it works without focus. Turn it off to resume. Ctrl-C stops.
-
-Every race is appended to `race_log.csv` — odds, choice, reason, stake,
-winner, payout, timings — and `python -m insidetrack stats` reads it back:
-what your own bets returned, broken down by price backed, by lane and by bet
-size, plus the table of what actually *wins* over every board you've seen
-whatever you bet on it. A few hundred graded races there are worth more than
-the numbers at the top of this file.
+[What the output means →](docs/console-output.md)
 
 ---
 
@@ -285,317 +110,55 @@ python -m insidetrack <command> [options]
 
 | command | what it does |
 | --- | --- |
-| `setup` | measure this screen's boxes and write `insidetrack.toml` |
+| `setup` | measure this screen's boxes (run this first) |
 | `run` | place bets until stopped |
-| `read` | one board read, and what the strategy would do with it |
-| `result` | read the winning lane off a result screen, and check the RESULTS box |
-| `probe` | save `calibrate.png` and `probe.png` to check the boxes |
+| `stats` | what your own bets have returned |
+| `read` | one board read, and what it would do with it |
+| `result` | check it can read a result screen |
+| `probe` | save pictures with the boxes drawn, to check them |
 | `keys` | find which window chiaki-ng takes input on |
-| `tune` | check the timings against the real menu (~1 min, places no bets) |
-| `budget` | model cycle time and $/hour from the timings |
-| `stats` | what your own logged bets have returned |
+| `tune` | check the timings against the real menu (~1 min, no bets) |
+| `budget` | estimated races and $/hour from your timings |
 
 | option | effect |
 | --- | --- |
-| `--screen NAME` | which `[screens.NAME]` block to use |
-| `--config PATH` | a config file somewhere other than next to you |
 | `--dry` | decide and log, send no input |
-| `--strategy pickorder\|chart` | override the strategy for this run |
-| `--input-mode postmessage\|gamepad\|keyboard` | override the input backend |
-| `--debug-images` | save what the recogniser was actually given |
-| `--no-colour` | plain text (also `NO_COLOR=1`; off automatically when piped) |
-
-`python inside_track_bot.py <command>` is the same thing, kept as an entry
-point. `python validate.py` reproduces the strategy analysis (~30s, or
-`--quick`).
+| `--screen NAME` | use a different screen layout |
+| `--config PATH` | use a config file somewhere else |
+| `--no-colour` | plain text output |
 
 ---
 
-## Quirks worth knowing before you start
+## A few things to know
 
-**The window has to be visible and unobscured.** Everything is measured off
-real screen pixels. Another window sitting on top of chiaki-ng doesn't just
-spoil the view, it breaks the capture — you will be OCR'ing whatever is in
-front. Minimised is fatal for the same reason (the bot restores the window if
-it finds it minimised, but won't fight you for it).
-
-**It does not need focus, and that is the point.** In the default
-`postmessage` mode, keystrokes are posted straight to the chiaki-ng window
-handle, so they exist for that window only. You can keep using the PC while it
-runs. Just don't drag anything over the stream.
-
-**Re-run `setup` whenever the window moves or resizes.** Boxes measured at one
-window size are wrong at another. chiaki-ng does not always restore the
-geometry you left it at. If reads start failing, run `probe` and look at
-`probe.png` before assuming the OCR broke.
-
-**Don't touch the PS5's own controller while it runs.** A real input moves the
-menu highlight out from under the bot, and it counts presses from where it
-believes the cursor is.
-
-**`result` only means anything on a result screen.** Run it while the board is
-up and it will happily read a horse's saddle number, because the box happens
-to sit there. The `result banner:` line it prints is the exception, and worth
-checking both ways round — see
-[Knowing the race is over](#knowing-the-race-is-over).
-
-**chiaki-ng's keyboard mapping has to be live** for `postmessage` and
-`keyboard` modes: Cross = Enter, Circle = Backspace, which are the defaults.
-
-**Gamepad mode leaks into other programs.** A ViGEmBus virtual DualShock 4 is
-a system-wide HID device. Steam in particular grabs it and, with a Desktop
-layout active, retypes it into whatever window you have focused — this is the
-"it's taking over my PC" effect, and it is why `postmessage` is the default.
-If you genuinely need the pad:
-[HidHide](https://github.com/nefarius/HidHide) (hide the pad from everything
-except `chiaki-ng.exe`) is the real fix; turning off Steam's *PlayStation
-Controller Support* or closing Steam works too. chiaki-ng also ignores
-joystick events while unfocused unless you launch it with
-`SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1`. The bot warns at startup if it sees
-Steam running in gamepad mode.
-
-**Keyboard mode types into whatever is focused.** Last resort only; you cannot
-use the PC while it runs.
-
-**A skip is still a bet.** When the board is bad (two EVENS, or nothing under
-6/1), it places the $100 minimum rather than backing out — cheaper than the
-navigation risk of leaving and re-entering.
-
-**Unreadable results are left blank, not guessed.** If the winning lane won't
-read, the race is logged without one and excluded from every ROI figure. A
-missed read and a lost bet are not the same thing.
+- **Don't touch the PS5's controller while it runs.** It moves the menu out
+  from under the bot.
+- **Re-run `setup` if the chiaki-ng window moves or resizes.** The boxes are
+  measured for one window size.
+- **A skip is still a bet.** On a bad board it places the $100 minimum rather
+  than backing out, which is safer than leaving and re-entering.
+- **If the winning lane can't be read, the race is logged blank, not guessed.**
+  Those races are left out of your stats.
 
 ---
 
-## Configuration
+## Something's wrong
 
-Everything lives in **`insidetrack.toml`**, next to you or next to the
-package. It is not committed — it is specific to your window — and
-`insidetrack.example.toml` is the template documenting every setting.
+Most problems are a box that has drifted or was drawn too tight. Run `probe`
+and look at `out/probe.png` first.
 
-```toml
-window_title = "chiaki"        # any window whose title contains this
-default_screen = "main"        # used when --screen is not given
-input_mode = "postmessage"     # postmessage | gamepad | keyboard
-strategy = "pickorder"         # pickorder (validated) | chart
-# post_target_index = 2        # from `insidetrack keys`; 0 = top-level
-
-[screens.main]
-odds = [
-    [246, 371, 88, 48],   # lane 1
-    [246, 496, 88, 48],   # lane 2
-    ...
-]
-bet_amount = [1315, 480, 140, 75]
-win_lane = [1405, 785, 80, 90]
-result_banner = [1210, 60, 480, 180]
-```
-
-Boxes are `[left, top, width, height]` in pixels **from the top-left of the
-chiaki-ng window**, not of the screen. The corner form
-`{ left = .., top = .., right = .., bottom = .. }` works anywhere too, and for
-the odds you can give just `odds_lane1` and `odds_lane6` and let the four
-between be spaced evenly.
-
-Keep one `[screens.NAME]` block per layout — per monitor, per window size —
-and pick between them with `--screen`.
-
-A config is looked for in this order: `--config PATH`, then
-`$INSIDETRACK_CONFIG`, then `insidetrack.toml` in the working directory, then
-beside the package, then `~/.insidetrack.toml`.
-
-There is also an optional `[timing]` block, which you should not need unless
-navigation starts dropping presses:
-
-```toml
-[timing]
-transition_gap = [0.4, 0.5]    # raise this FIRST if presses go missing
-menu_tap_gap = [0.05, 0.06]    # then this
-```
+[Troubleshooting, symptom by symptom →](docs/troubleshooting.md)
 
 ---
 
-## When something goes wrong
+## More detail
 
-**"No window matching 'chiaki'"** — chiaki-ng isn't running, is minimised, or
-its title differs. Set `window_title` in the config.
-
-**Odds read as `??`, or `trusted=False` every cycle** — the boxes have
-drifted. Run `probe` and look at `probe.png`; if the red boxes aren't on the
-odds, re-run `setup`. Check the window isn't covered.
-
-**A price reads wrong in one lane only** — that box is probably clipping.
-`EVENS` is the usual victim; see the widest-text note above.
-
-**`win lane: UNREADABLE`** — run `result` on a real result screen, after a win
-*and* after a loss. If it fails on both, the box is wrong; re-run `setup` and
-measure it on a result screen. Races logged without a winner are dead weight:
-they're excluded from `stats`, so the losses stop teaching you anything.
-
-**Every race takes the full `race_wait_max`, and the log says
-`settled=0`** — the `result_banner` box isn't matching, so the wait runs out
-instead of ending on the banner. Run `result` on a result screen: if it says
-`no match`, the box has orange backdrop in it or has missed the letters.
-Re-run `setup` and redraw it inside the panel.
-
-**`race_s` is identical in every row of the log** — nothing is being detected;
-that number is just the floor. If the screen has a `result_banner` box, lower
-`banner_wait_min` until `race_s` starts varying race to race. If it doesn't,
-that constant is the whole point of measuring one.
-
-**Races end early, on a screen with no result on it** — the opposite:
-something during the race is matching the `result_banner` box. Run `result` on
-the betting board and mid-race; anything but `no match` means the box is
-somewhere too generic. `race_wait_min` is the backstop for this, so raise it
-back to just inside the finish while you fix the box.
-
-**Navigation desyncs — bets land on the wrong horse** — raise
-`transition_gap` in `[timing]` first (the press right after a region change is
-where drops actually happen), then `menu_tap_gap`. `tune` will tell you
-whether a multi-lane walk is landing where it was aimed.
-
-**Nothing reaches the PS5** — run `keys`. If a window other than `[1]` moved
-the cursor, put its number in `post_target_index`. If none did, your chiaki-ng
-build doesn't take posted key messages; switch `input_mode` to `gamepad` and
-read the gamepad quirk above.
-
-**"could not reach max, placing at $X"** — the bet-increase taps are being
-eaten. The bot reads the amount back and tops up, so this is a warning rather
-than a failure, but if it's constant, raise `bet_tap_gap`.
-
-**The bot ends up in the open world** — it backed out too far. That is
-unrecoverable by design (it only ever presses Circle once, confirmed), so put
-it back on the machine's start screen and it will pick up.
-
----
-
-## How it works
-
-The package is layered so each piece can be tested without the game running.
-`app.build()` assembles the object graph; nothing constructs its own
-collaborators, so a test can hand `BoardReader` a fake screen and a scripted
-recogniser.
-
-| module | what it owns |
+| | |
 | --- | --- |
-| `config` | profile / timing / settings shapes — data only |
-| `userconfig` | `insidetrack.toml`: read, validated, written |
-| `wizard` / `picker` | `setup`: the walkthrough, and the window you click on |
-| `screen` | capture, and "has the picture stopped moving?" |
-| `vision` | numpy preprocessing of a captured box |
-| `ocr` | the recogniser, wrapped |
-| `parsing` | text → odds, money, lane numbers |
-| `board` | what the bot learns by looking |
-| `backends` / `controller` | getting a keypress to the PS5, and making it land |
-| `machine` | the betting machine as a sequence of screens |
-| `strategy` | which horse, and what the race was worth |
-| `racelog` / `stats` | the record, and reading it back |
-| `loop` | the race cycle |
-| `app` / `cli` / `diagnostics` / `tuning` | wiring and the commands |
-
-A few decisions that are load-bearing:
-
-**Nothing is timed by sleeping if it can be measured instead.** A press is
-confirmed by watching whether the screen reacted, and the end of a race is
-read off the result screen itself rather than waited out — see
-[Knowing the race is over](#knowing-the-race-is-over). Where stillness is
-still the signal, the test adapts to how much motion an animation actually
-showed, because a busy result screen never gets as quiet as an idle menu.
-
-**All six lanes are read in one recognition pass.** They're stacked onto a
-single canvas and matched back by row, which takes ~130ms against ~1040ms for
-running the text detector once per lane. A lane whose text won't parse falls
-back to the detector, so a hard read still costs what it always did. Only
-lanes that came back doubtful are read a second time.
-
-**Framing matters more than thresholds.** The recogniser scales whatever it's
-given to a fixed height, so a box with the odds occupying a third of it
-delivers tiny glyphs — that was the source of `13/1 → 19/1`. `prepare_text()`
-crops to the ink and scales the *text*, which is why an over-wide box is
-harmless.
-
-**A bet is only placed from a screen we've proved we're on.** A trusted board
-read is that proof. Anything unproven backs out one screen and restarts the
-cycle, because the top of the loop is the thing that comes back in.
-
-### Knowing the race is over
-
-The race is the floor on cycle time — everything else in a cycle put together
-costs less than it does — so how the bot decides it has ended is worth more
-than any other timing in the config.
-
-Originally it decided by watching the picture stop moving. That looks right
-and isn't: **when a race finishes the camera holds on the horses for somewhere
-between half a second and three seconds** before the result screen comes up,
-and a held camera is exactly as still as a finished screen. Anything quick
-enough to catch the short hold fires during the long one, on a screen with no
-result on it; anything patient enough not to has to be patient in every race,
-including the ones where the hold was half a second. `race_wait_min` was
-paying for the worst case, every race.
-
-So the bot looks for the result screen instead. **The RESULTS title panel is
-the same every race** — a near-black box with yellow letters, at the top of
-the screen, nowhere near the two things that do differ (which horse won, and
-what the bet paid). The `result_banner` box is matched on those two colours:
-mostly near-black, some yellow in it. Not OCR — two pixel counts over a small
-crop, about a millisecond, so it can be asked twenty times a second for the
-whole wait and cost nothing. Two matching frames in a row are needed, against
-a single odd frame caught mid-fade.
-
-Nothing waits for the screen to settle afterwards. The cards, the prices and
-the banner all arrive together, so there is nothing to settle for — and a
-stillness check here is worse than useless, because the chip counter ticks up
-on this screen and two consecutive quiet frames often never come. If a lane
-number is ever caught mid-draw, `read_win_lane()` simply asks again.
-
-That splits the floor in two, because what it has to do depends on which
-signal ends the wait:
-
-| setting | used when | what it has to clear | default |
-| --- | --- | --- | --- |
-| `banner_wait_min` | there's a `result_banner` box | only the screens between the bet and the start | 25.0 |
-| `race_wait_min` | there isn't | the finish *and* the 0.5–3s camera hold after it | 33.0 |
-
-`banner_wait_min` is not a guess at when the race ends — the banner says that.
-One poll costs ~7ms, so looking early is close to free and it can come down a
-long way. Take it down in steps and watch the `race_s` column in
-`race_log.csv`: while `race_s` keeps landing on the same value every race, the
-floor is still what you're waiting on; once it starts varying race to race the
-banner has taken over and there is nothing left to win.
-
-Check the box with `python -m insidetrack result`, which prints what the
-matcher sees:
-
-```
-result banner: MATCHES  (90% near-black, 9% yellow)
-```
-
-Run it on a result screen and it should say `MATCHES`; run it on the betting
-board and it should not. Both halves matter — a box that matches everything
-ends the race wait the moment it starts looking. The one thing that breaks it
-is the orange backdrop leaking into the box, so keep it inside the panel.
-
-Without a `result_banner` box nothing changes: the wait falls back to
-stillness, `race_wait_min` has to stay generous, and the bot says so at
-startup.
-
-For scale, the pieces measured on this machine:
-
-| step | cost |
-| --- | --- |
-| one banner check (grab + two pixel counts) | 7 ms |
-| `read_win_lane()`, landing first try | 39 ms |
-| one full-window stillness frame | 30 ms |
-
-### Files
-
-| file | what |
-| --- | --- |
-| `insidetrack/` | the bot |
-| `inside_track_bot.py` | entry point, kept so the old commands still work |
-| `insidetrack.example.toml` | config template — copy it, or run `setup` |
-| `insidetrack.toml` | **your** boxes and settings (not committed) |
-| `race_log.csv` | your own race-by-race record, appended forever |
-| `validate.py` | reproduces the strategy analysis |
-| `parse_races.py` | parses the published race logs |
-| `post-info/` | the original posts and charts |
+| [The strategy and its numbers](docs/strategy.md) | which horse it backs, and the evidence |
+| [Measuring the boxes](docs/calibration.md) | the full setup walkthrough |
+| [Reading the output](docs/console-output.md) | what each line and colour means |
+| [Configuration](docs/configuration.md) | every setting in `insidetrack.toml` |
+| [Troubleshooting](docs/troubleshooting.md) | quirks and specific failures |
+| [Knowing the race is over](docs/race-detection.md) | the biggest lever on speed |
+| [How it works](docs/architecture.md) | internals and repository layout |

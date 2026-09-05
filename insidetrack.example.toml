@@ -53,8 +53,8 @@ strategy = "pickorder"
 #
 #     python -m insidetrack probe
 #
-# which saves calibrate.png -- a plain capture of just the window -- and
-# probe.png with the current boxes drawn on top. Open calibrate.png in
+# which saves out/calibrate.png -- a plain capture of just the window --
+# and out/probe.png with the current boxes drawn on top. Open it in
 # anything that shows the cursor's pixel position (MS Paint does, bottom
 # left), and read the corners straight off it.
 #
@@ -166,7 +166,7 @@ bet_amount = [1315, 480, 140, 75]
 # starting, so nothing before the race can be mistaken for the result. One
 # poll costs about 7ms, so looking early is close to free and this can come
 # down a long way. Take it down in steps and watch the race_s column in
-# race_log.csv: while race_s keeps landing on the same value the floor is
+# data/race_log.csv: while race_s keeps landing on the same value the floor is
 # still the thing you are waiting on, and when it starts varying race to
 # race the banner has taken over and there is nothing left to win.
 # banner_wait_min = 25.0

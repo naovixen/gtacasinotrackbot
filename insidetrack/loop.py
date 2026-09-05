@@ -13,7 +13,7 @@ layout it produces:
               bet      lane 1  EVENS   MAX     10,000
               result   lane 1  EVENS   WON     +10,000
               session  1/1 won                 +10,000
-              session  37s cycle  +100.0% ROI  +374,000/h
+              session  37.4s/r    +100.0% ROI  +374,000/h
 
 `bet` and `result` share their cells deliberately: what we backed sits
 directly above what won, so whether they match is a matter of the two lines
@@ -38,13 +38,12 @@ from .strategy import decide, grade
 READ_ATTEMPTS = 4
 
 # The two fields before the money on the session's second line, in the order
-# they print: cycle time, then ROI. They add up to three cells on purpose --
-# the same three that `4/7 won` spans on the line above -- so the hourly rate
-# lands in the same column as the running net and the two money figures read
-# down as one. That is also why the cycle time loses its decimal: 11 + 13 is
-# the only split of 24 that leaves both fields a two-space gap, and a tenth
-# of a second is in the CSV anyway.
-CYCLE_W = 11        # '37s cycle'
+# they print: seconds per race, then ROI. They add up to three cells on
+# purpose -- the same three that `4/7 won` spans on the line above -- so the
+# hourly rate lands in the same column as the running net and the two money
+# figures read down as one. 11 + 13 is the split of 24 that leaves ROI its
+# two-space gap; `s/r` is short enough to spend the slack on the decimal.
+CYCLE_W = 11        # '37.4s/r'
 ROI_W = 13          # '+100.0% ROI'
 
 
@@ -262,7 +261,7 @@ class Bot:
         # End to end, not the race alone. The race is the part nothing can
         # do anything about; the cycle is the number a change to the timings
         # or the waits actually moves, and it is what the rate is made of.
-        aside = (console.pad(f"{race.cycle_s:.0f}s cycle", CYCLE_W)
+        aside = (console.pad(f"{race.cycle_s:.1f}s/r", CYCLE_W)
                  + console.pad(f"{roi:+.1f}% ROI", ROI_W)
                  + f"{expected:+,.0f}/h")
         print(console.row("session", console.note(aside.rstrip())))

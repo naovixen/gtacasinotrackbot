@@ -23,7 +23,7 @@ DEFAULT_WINDOW_TITLE = "chiaki"
 
 @dataclass(frozen=True)
 class Profile:
-    """The boxes for one screen layout, measured off its own calibrate.png.
+    """The boxes for one screen layout, measured off its own out/calibrate.png.
 
     bet_amount_region enables max-bet verification; win_lane_region enables
     result grading; result_banner_region enables spotting the result screen
@@ -151,9 +151,9 @@ BET_INCREASE_MODE = "tap"      # "tap" | "hold" (one long press, menu repeats)
 BET_HOLD_SECONDS = 3.0
 
 # What a race is worth on average under the validated strategy, measured
-# over his 547-race log -- see validate.py. Throughput times this is what a
-# given cycle time is worth an hour, which is the figure both the run loop
-# and `budget` report.
+# over his 547-race log -- see analysis/validate.py. Throughput times this
+# is what a given cycle time is worth an hour, which is the figure both the
+# run loop and `budget` report.
 PROFIT_PER_RACE = 4917.0
 
 CONF_TRUST = 0.55              # min per-lane OCR confidence to bet real money

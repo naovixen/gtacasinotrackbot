@@ -4,11 +4,15 @@
 insidetrack.toml
 .insidetrack.toml
 
-# What the diagnostics and the setup wizard drop next to you
-calibrate.png
-probe.png
-setup-*.png
-debug_*.png
+# Everything the bot generates and can regenerate: the calibration captures
+# (calibrate.png, probe.png), the setup wizard's shots (setup-*.png) and the
+# --debug-images crops. Safe to delete the whole directory at any time.
+out/
+
+# race_log.csv itself is committed -- it is the record the strategy is
+# measured against -- but the rotated copies racelog.py leaves beside it are
+# per-run and yours alone.
+data/*.old.csv
 
 __pycache__/
 *.py[cod]
