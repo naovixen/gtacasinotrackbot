@@ -594,3 +594,138 @@ away from an accident.
 
 Standing caveat: this is automating a live GTA Online money faucet. Rockstar
 bans for it. Nothing here changes that.
+
+---
+
+## Split into a package, and the waiting taken out of it
+
+The single 1,900-line file is now `insidetrack/`, entered through the same
+`inside_track_bot.py`. Each module is one concern, under 400 lines, with
+functions under 25:
+
+| module | what it owns |
+| --- | --- |
+| `config` | screen profiles, timings, run settings -- data only |
+| `screen` | capture, and "has the picture stopped moving?" |
+| `vision` | numpy preprocessing of a captured box |
+| `ocr` | the recogniser, wrapped |
+| `parsing` | text to odds, money, lane numbers |
+| `board` | what the bot learns by looking |
+| `backends` / `controller` | getting a keypress to the PS5, and making it land |
+| `machine` | the betting machine as a sequence of screens |
+| `strategy` | which horse, and what the race was worth |
+| `racelog` / `stats` | our own record, and reading it back |
+| `loop` | the race cycle |
+| `app` / `cli` / `diagnostics` / `tuning` | wiring and the commands |
+
+Nothing constructs its own collaborators: `app.build()` assembles the graph,
+so a test can hand `BoardReader` a fake screen and a scripted recogniser and
+exercise every branch without the game running. `decide()` and `grade()` were
+checked against the old implementation over 40,004 random boards and 5,000
+gradings: zero differences, and `validate.py` still imports the entry point
+and reproduces its numbers.
+
+### Where the time was
+
+Three measurements, all on this machine:
+
+| | before | after |
+| --- | --- | --- |
+| one frame for motion detection | 84ms (PIL resize) | 33ms (numpy stride) |
+| reading six lanes of odds | 1041ms (detector per lane) | 130ms (one recognition pass) |
+| moving on after the race ends | +2.10s | +0.16s |
+
+The board read was going through `readtext()`, which runs the CRAFT text
+detector to find words whose boxes we had already calibrated. `recognize()`
+skips it. The six lanes are stacked into one canvas and read in a single
+pass, and results are matched back by the y they came from, so a lane cannot
+be credited with another lane's text. A lane whose text will not parse still
+falls back to the detector, so a hard read costs what it always did.
+
+Only the doubtful lanes are read a second time now. Re-reading all six to
+settle one of them was most of the OCR in a cycle, and a lane that came back
+at 0.95 was never the one in question.
+
+The dead time after a race was the stillness test: it polled every 350ms and
+wanted five quiet samples, so it watched a finished screen for 1.75s before
+believing it. At 33ms a frame, three samples at the natural cadence answer
+the same question in about a fifth of a second. An exit a fraction early is
+self-correcting -- the win-lane read finds nothing legible yet and asks
+again -- and that read no longer does two passes 0.3s apart either, because
+the caller now proves the screen is still before asking.
+
+`tap_confirm` runs on one deadline (`confirm_budget`, 0.5s) instead of three
+stacked timeouts. A change seen after the deadline is accepted rather than
+retried: the round trip to the PS5 measured 282ms here, and the failure at
+the bottom of a too-tight budget is not a slow confirm but a second press
+landing on whatever screen comes next. If the log fills with "did not
+register", the connection has outrun the budget -- raise it in `config.py`.
+`tune` prints the live round trip.
+
+### The commands
+
+One command, then options. `calibrate` folded into `probe` (which saves both
+images), `keytest` became `keys`, and the positional screen name became
+`--screen`:
+
+```
+python inside_track_bot.py run --screen 4k
+python inside_track_bot.py run --dry
+python inside_track_bot.py read --screen 4k     # the betting board
+python inside_track_bot.py result --screen 4k   # who won
+python inside_track_bot.py probe --screen 4k
+python inside_track_bot.py keys | tune | budget | stats
+python inside_track_bot.py --help
+```
+
+### Framing is what the recogniser actually cares about
+
+Dropping the text detector for `recognize()` was most of a second a race, but
+it moved a job nobody had noticed the detector doing: cropping to the text.
+The recogniser scales whatever it is handed to a 64-pixel-tall input, so a
+box with the odds occupying a third of it delivers glyphs about 20 pixels
+tall. That is where `13/1 -> 19/1` and `3/1 -> 9/1` came from -- not the
+threshold, not the capture, the framing.
+
+`vision.prepare_text()` now crops to the ink and scales the *text* to the
+recogniser's own height. On a live board (29/1, 13/1, EVENS, 8/1, 4/1, 25/1):
+
+| | reads correct | time |
+| --- | --- | --- |
+| detector per lane (the old path) | 6/6 | 1111ms |
+| recognize on the whole box | 4/6 | 106ms |
+| recognize, cropped to the ink | 6/6 | 106ms |
+
+Still 6/6 with every box shifted up to 14px in any direction, so it is no
+more fragile to a box that has drifted than the detector was.
+
+### The lane number on the result screen
+
+Reading the winning horse's number was failing on most screens, and that one
+predates the refactor -- the numpy port was byte-identical to the old
+`_isolate_digit`, and both score 2/9 on real badges. The bug is the polarity
+test: it decided light-text-on-dark from the average brightness of the whole
+crop, and a lane number is a small dark digit on a bright badge sitting in a
+much larger dark card. The surround wins the average, the crop gets
+inverted, and what is left to isolate is the badge rather than the number.
+
+`vision.digit_candidates()` prepares the crop both ways round and lets the
+recogniser choose, which costs one extra ~20ms read and needs no assumption
+about what is behind the badge. Two things keep it honest:
+
+- ink that touches the edge of the box is not the digit -- the card behind
+  it and the badge's own border both run off the side, the number never does;
+- 1 to 6 are all taller than they are wide (the widest measured 0.47), while
+  the diamond they sit in measures 1.00, which is what `DIGIT_ASPECT_MAX`
+  cuts. Without it the recogniser will happily call a white diamond a 6;
+- and where both readings find a confident digit, the dark-ink one wins
+  unless the other beats it by 0.05, because every number in this game is
+  dark on a light badge.
+
+Scored on eleven real badges -- the six coloured diamonds on the board, the
+three cards on a result screen, and the winner's badge at two offsets: 2/11
+before, 11/11 after.
+
+One thing worth knowing: `result` will read the horse's saddle number if you
+run it while the board is up, because the box happens to sit there. It only
+means anything on a result screen.
