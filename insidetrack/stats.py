@@ -9,10 +9,23 @@ our own picks, is what PICK_ORDER should eventually be rebuilt from.
 
 from typing import Dict, List, Sequence
 
+from . import console
 from .parsing import odds_label
 from .racelog import DEFAULT_PATH, load
 
 Rows = Sequence[Dict[str, str]]
+
+
+def _roi(value: float, columns: int = 8) -> str:
+    """An ROI, coloured by sign and padded to a column the colour does not
+    count towards. This table is read for exactly one thing -- which prices
+    make money -- so the sign is the thing worth seeing first."""
+    text = f"{value:+.1f}%"
+    if value > 0:
+        text = console.good(text)
+    elif value < 0:
+        text = console.bad(text)
+    return console.pad(text, columns, right=True)
 
 
 def _number(row: Dict[str, str], key: str) -> float:
@@ -27,9 +40,11 @@ def summarise(label: str, rows: Rows) -> None:
     back = sum(_number(r, "payout") for r in rows)
     won = sum(1 for r in rows if r.get("won") == "1")
     roi = (back - staked) / staked * 100 if staked else 0.0
-    print(f"    {label:<10} n={len(rows):<5} won {won:>4} "
-          f"({won / len(rows) * 100:5.1f}%)  staked ${staked:>12,.0f}  "
-          f"back ${back:>12,.0f}  ROI {roi:+7.1f}%")
+    print(f"    {console.key(console.pad(label, 10))} "
+          + console.note(f"n={len(rows):<5}")
+          + f" won {won:>4} ({won / len(rows) * 100:5.1f}%)  "
+          + console.note(f"staked ${staked:>12,.0f}  back ${back:>12,.0f}")
+          + f"  ROI {_roi(roi)}")
 
 
 def _horse_label(row: Dict[str, str]) -> str:
@@ -45,16 +60,17 @@ def _by_price(keys) -> List[str]:
 
 
 def _breakdowns(graded: Rows) -> None:
-    print("\n  by horse backed (break-even win rate is 1/(n+1)):")
+    print("\n  " + console.head("by horse backed "
+                                "(break-even win rate is 1/(n+1)):"))
     for key in _by_price({_horse_label(r) for r in graded}):
         summarise(key, [r for r in graded if _horse_label(r) == key])
 
-    print("\n  by lane backed:")
+    print("\n  " + console.head("by lane backed:"))
     lanes = sorted({r["lane"] for r in graded if r.get("lane")}, key=int)
     for lane in lanes:
         summarise(f"lane {lane}", [r for r in graded if r["lane"] == lane])
 
-    print("\n  by bet size:")
+    print("\n  " + console.head("by bet size:"))
     for flag, label in (("1", "max bet"), ("0", "min skip")):
         group = [r for r in graded if r.get("max_bet") == flag]
         if group:
@@ -68,7 +84,7 @@ def report(path: str = DEFAULT_PATH) -> None:
         return
     graded = [r for r in rows if r.get("win_lane")]
     runs = {r["run_id"] for r in rows}
-    print(path)
+    print(console.head(path))
     print(f"  {len(rows)} bets over {len(runs)} run(s), "
           f"{len(graded)} with a readable winning lane")
     if not graded:
@@ -112,14 +128,18 @@ def what_won(rows: Rows) -> None:
               "`result`; without it the races\n  we LOSE teach us nothing.")
         return
     appear, won, lanes = _tally(board)
-    print(f"\n  what actually wins ({len(board)} races, whatever we bet):")
-    print(f"    {'price':<8}{'appeared':>9}{'won':>6}{'win rate':>10}"
-          f"{'break-even':>12}{'flat ROI':>10}")
+    print("\n  " + console.head(f"what actually wins ({len(board)} races, "
+                                "whatever we bet):"))
+    print("    " + console.head(f"{'price':<8}{'appeared':>9}{'won':>6}"
+                                f"{'win rate':>10}{'break-even':>12}"
+                                f"{'flat ROI':>10}"))
     for price in sorted(appear):
         seen, hits = appear[price], won.get(price, 0)
-        print(f"    {odds_label(price):<8}{seen:>9}{hits:>6}"
-              f"{hits / seen * 100:>9.1f}%{100.0 / (price + 1):>11.1f}%"
-              f"{(hits * (price + 1) - seen) / seen * 100:>9.1f}%")
+        print(f"    {console.key(console.pad(odds_label(price), 8))}"
+              + console.note(f"{seen:>9}{hits:>6}")
+              + f"{hits / seen * 100:>9.1f}%"
+              + console.note(f"{100.0 / (price + 1):>11.1f}%")
+              + _roi((hits * (price + 1) - seen) / seen * 100, 10))
     print("    flat ROI = backing that price every time it appeared.")
     print("\n  winning lane: "
           + "  ".join(f"{lane}: {lanes.get(lane, 0)}" for lane in range(1, 7))

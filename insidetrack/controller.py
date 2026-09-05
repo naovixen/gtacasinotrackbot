@@ -15,6 +15,7 @@ import random
 import time
 from typing import Optional
 
+from . import console
 from .config import Band, Timing
 
 VK_SCROLL = 0x91
@@ -30,10 +31,11 @@ def paused() -> bool:
 def wait_while_paused() -> None:
     if not paused():
         return
-    print("  ScrollLock is on -- paused. Turn it off to resume.")
+    print(console.warn_row("ScrollLock is on -- turn it off to resume",
+                           "paused"))
     while paused():
         time.sleep(0.5)
-    print("  resumed")
+    print(console.row("resumed", tag_style="green"))
 
 
 class Controller:
@@ -101,10 +103,14 @@ class Controller:
             return True
         budget = self._timing.confirm_budget if budget is None else budget
         settle = self._timing.confirm_settle if settle is None else settle
-        for attempt in range(tries):
+        # Silent while it retries. A press that lands on the second go is
+        # not news, and the message counted wrong anyway -- the last failure
+        # of three announced itself as "retry 4/3". A confirm that fails
+        # every try returns False, and every caller of this already says so
+        # in terms of what was actually lost.
+        for _ in range(tries):
             if self._attempt(key, budget, settle):
                 return True
-            print(f"  ({key} did not register, retry {attempt + 2}/{tries})")
         return False
 
     def _attempt(self, key: str, budget: float, settle: float) -> bool:

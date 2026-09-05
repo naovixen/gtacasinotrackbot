@@ -7,6 +7,7 @@ The package is layered so each piece can be tested without the game:
     userconfig  insidetrack.toml: the boxes, read and written
     wizard      `setup`: click the boxes, get a config file
     picker      the window you click them on
+    console     colour and alignment for everything printed
     screen      capture and "has the picture stopped moving?"
     vision      numpy preprocessing of a captured box
     ocr         the recogniser, wrapped

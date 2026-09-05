@@ -10,6 +10,7 @@ only for a lane whose text will not parse.
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from . import console
 from . import ocr as ocr_module
 from . import vision
 from .config import CONF_TRUST, RECHECK_CONF, Settings
@@ -111,12 +112,13 @@ class BoardReader:
     def sees_result_screen(self) -> bool:
         """Is the result screen's title banner showing right now?
 
-        This is what ends the race wait. Two pixel counts over one small
-        crop -- about a millisecond -- so it can be asked twenty times a
-        second without costing anything, and unlike stillness it answers the
-        question actually being asked. The camera holding on the horses for
-        two seconds after the finish is quiet and is not the result screen;
-        the result screen fading in is busy and is.
+        This is what ends the race wait. One small grab and two pixel
+        counts -- 7ms measured, against 30ms for a single full-window
+        stillness frame -- so it can be asked thirty times a second, and
+        unlike stillness it answers the question actually being asked. The
+        camera holding on the horses for two seconds after the finish is
+        quiet and is not the result screen; the result screen fading in is
+        busy and is.
         """
         signature = self.result_signature()
         return signature is not None and signature[2]
@@ -204,8 +206,11 @@ def _report(reads: Dict[int, LaneRead]) -> None:
     for lane in sorted(reads):
         value, confidence, raw = reads[lane]
         extra = f"  raw={raw!r}" if value is None or "repaired" in raw else ""
-        print(f"  lane {lane}: {odds_label(value)}  "
-              f"(conf {confidence:.2f}){extra}")
+        label = odds_label(value)
+        label = console.bad(label) if value is None else console.key(label)
+        print(f"  lane {lane}: {console.pad(label, 7)}"
+              + console.note(f"(conf {confidence:.2f})")
+              + console.warn(extra))
 
 
 def _save(image, name: str) -> None:

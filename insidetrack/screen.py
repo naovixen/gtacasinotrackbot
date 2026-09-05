@@ -87,10 +87,18 @@ class Screen:
         return self.difference(a, b) > bar
 
     def threshold(self) -> float:
-        """Measured once against the idle stream, then cached."""
+        """Measured once against the idle stream, then cached.
+
+        Warm it before the first press rather than letting a confirm pay for
+        it. Measuring costs six frames -- about half a second, which is a
+        whole confirm budget -- so the confirm that happened to trigger it
+        ran out of time before it could look twice, and reported a press it
+        had never actually watched for. It also measured whatever animation
+        that press had started, which is the opposite of the idle stream it
+        wants; that is what pinned it to the 12.00 cap.
+        """
         if self._threshold is None:
             self._threshold = self._measure_threshold()
-            print(f"  (screen-change threshold {self._threshold:.2f})")
         return self._threshold
 
     def _measure_threshold(self, samples: int = 6) -> float:

@@ -6,10 +6,11 @@ import time
 
 from PIL import Image, ImageDraw
 
+from . import console
 from .app import App
 from .backends import PostMessageBackend, post_key
 from .config import (BET_HOLD_SECONDS, BET_INCREASE_MODE, MAX_BET_PRESSES,
-                     TIMING_NAME, Timing)
+                     PROFIT_PER_RACE, TIMING_NAME, Timing)
 from .parsing import odds_label
 from .strategy import decide
 
@@ -23,7 +24,6 @@ MONEY_READ_S = 0.12
 DIGIT_READ_S = 0.04         # measured: one read_win_lane that lands first try
 BANNER_CHECK_S = 0.008      # measured: one sees_result_screen, grab included
 CONFIRM_S = 0.5
-PROFIT_PER_RACE = 4917.0        # measured over his 547 races, see validate.py
 
 
 def window_shot(app: App) -> Image.Image:
@@ -41,8 +41,8 @@ def probe(app: App) -> None:
     image.save("calibrate.png")
     _draw_boxes(image, app.settings.board)
     image.save("probe.png")
-    print(f"Profile {app.settings.profile!r}: {window.title!r} at "
-          f"{window.width}x{window.height}")
+    print(console.head(f"Profile {app.settings.profile!r}")
+          + f": {window.title!r} at {window.width}x{window.height}")
     print("  calibrate.png -- plain capture, measure new boxes off this one")
     print("  probe.png     -- red on the six odds, blue on the bet amount, "
           "yellow on the win\n                   lane, green on the RESULTS "
@@ -74,8 +74,10 @@ def read_board(app: App) -> None:
     started = time.time()
     odds, trusted = app.board.read_verified(verbose=True)
     print("Result, lanes 1-6:", [odds_label(value) for value in odds],
-          f" trusted={trusted}  ({time.time() - started:.2f}s)")
-    print("Decision:", decide(odds, app.settings.strategy))
+          " trusted=" + (console.good("True") if trusted
+                         else console.bad("False")),
+          console.note(f"({time.time() - started:.2f}s)"))
+    print(console.head("Decision:"), decide(odds, app.settings.strategy))
 
 
 def read_result(app: App) -> None:
@@ -93,12 +95,13 @@ def read_result(app: App) -> None:
     started = time.time()
     lane, raw = app.board.read_win_lane()
     if lane is None:
-        print(f"win lane: UNREADABLE (raw {raw!r}) -- the box should hold "
-              "just the winning horse's number; check probe.png against a "
-              "result screen.")
+        print(console.bad("win lane: UNREADABLE") + f" (raw {raw!r})")
+        print(console.note("  the box should hold just the winning horse's "
+                           "number; check probe.png"))
+        print(console.note("  against a result screen."))
     else:
-        print(f"win lane: {lane}")
-    print(f"({time.time() - started:.2f}s)")
+        print(f"win lane: {console.key(str(lane))}")
+    print(console.note(f"({time.time() - started:.2f}s)"))
 
 
 def _report_banner(app: App) -> None:
@@ -117,8 +120,9 @@ def _report_banner(app: App) -> None:
               f"--screen\n{app.settings.profile}` on a result screen.\n")
         return
     dark, yellow, matched = app.board.result_signature()
-    print(f"result banner: {'MATCHES' if matched else 'no match'}  "
-          f"({dark:.0%} near-black, {yellow:.0%} yellow)")
+    verdict = (console.good("MATCHES") if matched else console.bad("no match"))
+    print(f"result banner: {verdict}  "
+          + console.note(f"({dark:.0%} near-black, {yellow:.0%} yellow)"))
 
 
 def keys(app: App) -> None:

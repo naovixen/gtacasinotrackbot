@@ -150,6 +150,12 @@ MAX_BET_PRESSES = BET_PRESSES_TO_MAX + EXTRA_BET_PRESSES
 BET_INCREASE_MODE = "tap"      # "tap" | "hold" (one long press, menu repeats)
 BET_HOLD_SECONDS = 3.0
 
+# What a race is worth on average under the validated strategy, measured
+# over his 547-race log -- see validate.py. Throughput times this is what a
+# given cycle time is worth an hour, which is the figure both the run loop
+# and `budget` report.
+PROFIT_PER_RACE = 4917.0
+
 CONF_TRUST = 0.55              # min per-lane OCR confidence to bet real money
 RECHECK_CONF = 0.80            # below this, spend a second confirming read
 

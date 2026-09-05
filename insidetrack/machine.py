@@ -7,6 +7,7 @@ whether it got there. Nothing here reads a strategy or writes a log.
 import time
 from typing import Optional, Tuple
 
+from . import console
 from .config import (BET_HOLD_SECONDS, BET_INCREASE_MODE, MAX_BET,
                      MAX_BET_PRESSES, MIN_BET, Settings)
 
@@ -43,7 +44,8 @@ class Machine:
                 self._focus(window)
             return True
         except Exception as error:
-            print(f"(window check failed: {error})")
+            print(console.bad_row(f"window check failed: {error}",
+                                  "window"))
         return False
 
     @staticmethod
@@ -77,23 +79,28 @@ class Machine:
         for _ in range(2):
             amount = self._board.read_bet_amount()
             if amount is None:
-                print("  (bet amount unreadable -- proceeding unverified)")
+                print(console.warn_row(
+                    "bet amount unreadable -- proceeding unverified",
+                    "stake"))
                 return None
             if amount >= MAX_BET:
                 return amount
             self._top_up(amount)
         amount = self._board.read_bet_amount()
         if amount is not None and amount < MAX_BET:
-            print(f"  (WARNING: could not reach max, placing at ${amount})")
+            print(console.bad_row(
+                f"could not reach max -- placing at {amount:,}", "stake"))
         return amount
 
     def _top_up(self, amount: int) -> None:
         if amount <= MIN_BET:
-            print(f"  (amount ${amount}: Right into increase was eaten "
-                  "-- correcting)")
+            print(console.warn_row(
+                f"at {amount:,}: Right into increase was eaten -- correcting",
+                "stake"))
             self._keys.tap("right")
         else:
-            print(f"  (amount ${amount}: some taps eaten -- topping up)")
+            print(console.warn_row(
+                f"at {amount:,}: some taps eaten -- topping up", "stake"))
         self.spam_increase()
 
     def place_bet(self, lane: int, max_bet: bool) -> Tuple[bool, int]:
@@ -187,8 +194,9 @@ class Machine:
             if matched >= timing.result_frames:
                 return floor + (time.time() - started), True
             time.sleep(timing.result_poll)
-        print("  (no RESULTS banner in the result box -- check it with "
-              "`python -m insidetrack result`)")
+        print(console.warn_row("no RESULTS banner in the result box -- "
+                               "check it with `insidetrack result`",
+                               "banner"))
         return floor + (time.time() - started), False
 
     def return_to_start(self) -> bool:
@@ -237,6 +245,7 @@ class Machine:
         over must call back_out() alone: the top of the loop does its own
         enter_single_event(), and entering twice puts a Right and a Cross
         into the board instead of the start screen."""
-        print("  recovering: backing out to the machine start screen")
+        print(console.warn_row(
+            "backing out to the machine start screen", "recover"))
         self.back_out()
         self.enter_single_event()

@@ -4,19 +4,72 @@ The loop owns the decisions about what happens when something goes wrong.
 The rule it is built on: a bet is only ever placed from a screen we have
 proved we are on, and anything unproven backs out one screen and starts the
 cycle again, because the top of the loop is the thing that comes back in.
+
+What it prints goes on the grid in `console` -- see the note there. The
+layout it produces:
+
+    time      lane     1       2       3       4       5       6
+    21:04:12  board    EVENS   5/1     13/1    4/1     26/1    20/1
+              bet      lane 1  EVENS   MAX     10,000
+              result   lane 1  EVENS   WON     +10,000
+              session  1/1 won                 +10,000
+              session  37s cycle  +100.0% ROI  +374,000/h
+
+`bet` and `result` share their cells deliberately: what we backed sits
+directly above what won, so whether they match is a matter of the two lines
+looking the same rather than of reading either of them.
+
+The settings the run starts with are NOT on this grid -- see `app.preflight`.
+They are read once rather than scanned, and a line per setting beats a table
+of one row each.
 """
 
 import time
 from dataclasses import dataclass
 from typing import Optional
 
-from .config import Settings
+from . import console
+from .config import PROFIT_PER_RACE, Settings
 from .controller import wait_while_paused
 from .parsing import odds_label
 from .racelog import Race
 from .strategy import decide, grade
 
 READ_ATTEMPTS = 4
+
+# The two fields before the money on the session's second line, in the order
+# they print: cycle time, then ROI. They add up to three cells on purpose --
+# the same three that `4/7 won` spans on the line above -- so the hourly rate
+# lands in the same column as the running net and the two money figures read
+# down as one. That is also why the cycle time loses its decimal: 11 + 13 is
+# the only split of 24 that leaves both fields a two-space gap, and a tenth
+# of a second is in the CSV anyway.
+CYCLE_W = 11        # '37s cycle'
+ROI_W = 13          # '+100.0% ROI'
+
+
+def _board_row(odds, chosen: Optional[int]) -> str:
+    """The six prices as prices, in grid cells, the backed one picked out.
+
+    `odds=[1, 4, 7, 3, 12, 2]` was the raw list, which meant reading it as
+    numbers and translating -- and the lane that mattered was wherever you
+    counted to. Fixed cells put lane 6 in the same place on every line.
+    """
+    labels = []
+    for lane, value in enumerate(odds, start=1):
+        label = odds_label(value)
+        if value is None:
+            label = console.bad(label)
+        elif lane == chosen:
+            label = console.paint(label, "bold", "cyan")
+        labels.append(label)
+    return console.cells(*labels)
+
+
+def _header() -> str:
+    """Names the board row's six cells once. The other rows label themselves
+    -- `lane 4`, `EVENS`, `WON` -- so only the positional ones need it."""
+    return console.row("lane", console.cells(*"123456"), stamp="time")
 
 
 @dataclass
@@ -61,27 +114,23 @@ class Bot:
             wait_while_paused()
             self._cycle()
 
+    # ----------------------------------------------------------------------
+    # Printing. Everything goes through console.row(), so the grid holds.
+
     def _announce(self) -> None:
-        print(f"Profile {self._settings.profile!r} -- "
-              f"dry_run={self._settings.dry_run}")
-        if self._settings.dry_run:
-            print("DRY RUN: no input will be sent. Open the single-event "
-                  "screen by hand so the reads can see the board.")
-        if self._settings.board.win_lane_region is None:
-            print(f"NOTE: profile {self._settings.profile!r} has no "
-                  "win_lane_region, so races are logged without a result.")
-        else:
-            print(f"Logging every race to {self._log.path} "
-                  f"(run {self._log.run_id}).")
-        if self._settings.board.result_banner_region is None:
-            print(f"NOTE: profile {self._settings.profile!r} has no "
-                  "result_banner box, so the end of a race is\n      guessed "
-                  "at from the picture going still. Measuring it lets "
-                  "race_wait_min\n      come down under the finish -- see "
-                  "`python -m insidetrack result`.")
-        print("ScrollLock pauses at any time. Starting in 5s...")
         self._machine.ensure_window()
+        # Measure the screen-change bar HERE, on a screen that is sitting
+        # still, and not inside the first confirmed press. It costs six
+        # frames -- a whole confirm budget -- so whichever press triggered
+        # it used to run out of time and report a failure, every first
+        # cycle; and it was measuring that press's own animation, which is
+        # the opposite of the idle stream the bar is supposed to describe.
+        if not self._settings.dry_run:
+            self._screen.threshold()
+        print(_header())
         time.sleep(5)
+
+    # ----------------------------------------------------------------------
 
     def _cycle(self) -> None:
         started = time.time()
@@ -89,14 +138,15 @@ class Bot:
         self._machine.enter_single_event()
         odds, lane, max_bet, reason, trusted = self._read_board()
         if lane is None:
-            print("  board still unreadable -> skipping this cycle, "
-                  "no bet placed")
+            print(console.bad_row(
+                "board unreadable -- no bet placed this cycle"))
             return self._machine.back_out()
         placed, stake = self._machine.place_bet(lane, max_bet)
         if not placed:
-            print("  Place Bet never registered -> recovering, "
-                  "no race counted")
+            print(console.bad_row("Place Bet never registered -- recovering, "
+                                  "no race counted"))
             return self._machine.back_out()
+        self._bet_row(lane, odds[lane - 1], max_bet, stake)
         race = Race(odds=odds, lane=lane, max_bet=max_bet, reason=reason,
                     trusted=trusted, stake=stake)
         self._run_race(race, started)
@@ -104,30 +154,40 @@ class Bot:
     def _read_board(self):
         """Read until a trusted board comes back, recovering once on the way.
 
-        A trusted read is also the proof we are on the betting board at all,
+        A trusted board is also the proof we are on the betting board at all,
         so two failures in a row mean we are probably somewhere else.
         """
         for attempt in range(READ_ATTEMPTS):
             time.sleep(self._settings.timing.ocr_settle)
             odds, trusted = self._board.read_verified()
             lane, max_bet, reason = decide(odds, self._settings.strategy)
-            print(f"[{time.strftime('%H:%M:%S')}] odds={odds} "
-                  f"trusted={trusted} -> {reason}")
+            # No reason printed on a good read: it says the same thing every
+            # race, and the bet row underneath already names the lane and the
+            # price it chose.
+            print(console.row("board",
+                              _board_row(odds, lane if trusted else None),
+                              stamp=time.strftime("%H:%M:%S")))
             if lane is not None and trusted:
                 return odds, lane, max_bet, reason, trusted
+            print(console.warn_row(
+                "untrusted read -- reading the board again"))
             if attempt == 1:
                 self._machine.recover()
-            else:
-                print("  bad/untrusted read; retrying")
         return odds, None, False, reason, trusted
+
+    def _bet_row(self, lane: int, price, max_bet: bool, stake: int) -> None:
+        size = console.key("MAX") if max_bet else console.warn("MIN")
+        print(console.row("bet", console.cells(
+            f"lane {lane}", odds_label(price), size)
+            + console.money(stake)))
 
     def _run_race(self, race: Race, started: float) -> None:
         self._tally.races += 1
         self._tally.staked += race.stake or 0
         race.race_s, race.settled = self._machine.wait_for_race_end()
         if not race.settled:
-            print(f"  (race screen never went still within {race.race_s:.0f}s "
-                  "-- pressing on)")
+            print(console.warn_row(
+                f"no result within {race.race_s:.0f}s -- pressing on"))
         # Grade BEFORE anything is pressed: once BET AGAIN goes in, the
         # winning lane is gone. A lane that cannot be read is left blank in
         # the log rather than guessed at -- a missed read and a lost bet are
@@ -144,40 +204,66 @@ class Bot:
     def _score(self, race: Race) -> None:
         won, payout = grade(race.odds, race.lane, race.stake, race.win_lane)
         if won is None:
-            print("  result: UNREADABLE -- logged without a result")
+            print(console.row("result",
+                              console.cells("--", "--", console.warn("??"))))
+            print(console.warn_row(
+                "winning lane unreadable -- logged without a result"))
             return
         tally = self._tally
         tally.graded += 1
         tally.graded_stake += race.stake or 0
         tally.returned += payout
         tally.wins += won
-        outcome = f"${payout:,} back" if won else "lost"
-        print(f"  result: lane {race.win_lane} "
-              f"({odds_label(race.odds[race.win_lane - 1])}) won "
-              f"-- {outcome} on ${race.stake:,}")
+        # The verdict and what it made are one fact, so they carry one colour
+        # between them rather than two competing for the line.
+        tint = console.good if won else console.bad
+        profit = payout - (race.stake or 0)
+        print(console.row("result", console.cells(
+            f"lane {race.win_lane}",
+            odds_label(race.odds[race.win_lane - 1]),
+            tint("WON" if won else "LOST"))
+            + tint(f"{'+' if profit >= 0 else '-'}{abs(profit):,}")))
 
     def _finish(self, race: Race, started: float) -> None:
         if not self._machine.return_to_start():
             # The result screen is still up and the next cycle would start
             # from the wrong place. Circle out; the top of the loop comes
             # back in through enter_single_event().
-            print("  BET AGAIN never registered -> backing out to the "
-                  "machine start screen")
+            print(console.bad_row(
+                "BET AGAIN never registered -- backing out to the machine "
+                "start screen"))
             self._machine.back_out()
         race.cycle_s = time.time() - started
         self._log.append(race)
-        self._report(race)
+        self._session_rows(race)
 
-    def _report(self, race: Race) -> None:
+    def _session_rows(self, race: Race) -> None:
+        """Two lines, because they answer two questions.
+
+        The first ends on the running net, in the cell the race's own profit
+        was just printed in, so a screenful of results and the total they add
+        up to read down as one column. The second is the rates, which are
+        worth a glance a minute rather than a glance a race.
+        """
         tally = self._tally
-        size = "MAX" if race.max_bet else f"${race.stake:,}"
-        print(f"  bet {size} on lane {race.lane} (race #{tally.races})  "
-              f"cycle {race.cycle_s:.1f}s (race {race.race_s:.1f}s)  "
-              f"rate {tally.rate():.0f} races/h")
-        if tally.graded:
-            print(f"  session: {tally.wins}/{tally.graded} won, "
-                  f"${tally.returned:,} back, net ${tally.net():+,} "
-                  f"({tally.net() / tally.graded_stake * 100:+.1f}% ROI) "
-                  f"-> ${tally.net() / tally.hours():+,.0f}/h"
-                  + (f"   [{tally.races - tally.graded} ungraded]"
-                     if tally.races > tally.graded else ""))
+        if not tally.graded:
+            return
+        won = f"{tally.wins}/{tally.graded} won"
+        print(console.row("session", console.cells((won, 3))
+                          + console.money(tally.net(), signed=True)))
+        roi = tally.net() / tally.graded_stake * 100
+        # Throughput in the units it is actually worth. Races an hour is a
+        # number you then have to do arithmetic on; this is that arithmetic,
+        # at the average a race returns under the validated strategy. It is
+        # what the rate IMPLIES rather than what this session has made --
+        # the realised figure is the net on the line above, and over a few
+        # dozen races that one is mostly variance.
+        expected = round(tally.rate() * PROFIT_PER_RACE, -3)
+        # End to end, not the race alone. The race is the part nothing can
+        # do anything about; the cycle is the number a change to the timings
+        # or the waits actually moves, and it is what the rate is made of.
+        aside = (console.pad(f"{race.cycle_s:.0f}s cycle", CYCLE_W)
+                 + console.pad(f"{roi:+.1f}% ROI", ROI_W)
+                 + f"{expected:+,.0f}/h")
+        print(console.row("session", console.note(aside.rstrip())))
+        print()

@@ -19,7 +19,7 @@ writes one by asking you to point at them; every other command reads it.
 import argparse
 from typing import Callable, Dict, Optional, Sequence
 
-from . import diagnostics, stats, userconfig, wizard
+from . import console, diagnostics, stats, userconfig, wizard
 from .app import App, build, preflight
 from .screen import WindowMissing
 from .tuning import tune
@@ -93,6 +93,11 @@ def parser() -> argparse.ArgumentParser:
                         help="override the config's input mode for this run")
     parsed.add_argument("--debug-images", action="store_true",
                         help="save what the recogniser was given")
+    parsed.add_argument("--no-colour", "--no-color", action="store_true",
+                        dest="no_colour",
+                        help="plain text, no ANSI colour (also honours the "
+                             "NO_COLOR environment variable, and turns "
+                             "itself off when output is piped to a file)")
     setup = parsed.add_argument_group("setup only")
     setup.add_argument("--point", action="store_true",
                        help="hover the live screen and press F8, instead of "
@@ -118,6 +123,8 @@ def settings_from(args: argparse.Namespace, config: userconfig.UserConfig):
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser().parse_args(argv)
+    if args.no_colour:
+        console.disable()
     if args.command == SETUP:
         return wizard.run(args)
     try:

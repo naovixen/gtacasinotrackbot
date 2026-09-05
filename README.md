@@ -205,11 +205,65 @@ Start it from the machine's start screen. Per race it prints the odds it read,
 what it decided, the result, and a running session tally:
 
 ```
-[21:04:12] odds=[1, 5, 13, 4, 26, 20] trusted=True -> EVENS in lane 1
-  bet MAX on lane 1 (race #7)  cycle 46.9s (race 33.1s)  rate 76 races/h
-  result: lane 1 (EVENS) won -- $20,000 back on $10,000
-  session: 4/7 won, $58,000 back, net +$18,000 (+25.7% ROI) -> +$392,000/h
+profile   second
+strategy  pickorder
+timings   trimmed
+input     postmessage
+log       E:\gtacasinotrackbot\race_log.csv
+race end  on the RESULTS banner
+keys      ScrollLock pauses, Ctrl-C stops
+
+time      lane     1       2       3       4       5       6
+21:04:12  board    EVENS   5/1     13/1    4/1     26/1    20/1
+          bet      lane 1  EVENS   MAX     10,000
+          result   lane 1  EVENS   WON     +10,000
+          session  1/1 won                 +10,000
+          session  37s cycle  +100.0% ROI  +374,000/h
 ```
+
+The settings are a line each, flush left with the timestamps below them. Only
+the settings: which HWND the keys go to and what to do if the menu doesn't move
+is first-run troubleshooting, and it was printing in full before every run
+after that too. The two input modes that carry a real caution rather than a
+description still get it as small print under the value — a virtual pad is
+system-wide, and keyboard mode types into whatever is focused.
+
+The races are a grid, because that's output you scan for hours rather than
+read. Five rules hold the grid together:
+
+- **Money reads down one column.** The stake, the race's profit, the running
+  net and the hourly rate all start in the same place, which is what decides
+  the field widths on the session line rather than the other way round.
+- **One cell width for everything.** Every value sits in an 8-column cell —
+  wide enough for `lane 1`, the longest of them, plus a two-space gap — so the
+  prices on a `bet` row land in the same columns as the prices on the `board`
+  row above it. Per-column widths were internally correct and still read as
+  ragged.
+- **Nothing runs past the width of a board row** (64 columns — five padded
+  cells and a sixth as long as the price in it). A longer message wraps onto
+  the next line, still on the grid.
+- **Nothing is ever appended to a line.** Warnings and errors get their own
+  row, tagged and coloured — including the ones from the machine and the
+  controller, which is why `recovering` no longer sits at its own indent.
+- **At most one thing per line is bright**, and it's the thing you're scanning
+  for: the backed price on the board row, `MAX`/`MIN` on the bet row,
+  `WON`/`LOST` and what it made on the result row, the running net on the
+  session row. Timestamps, tags, units and asides are grey and recede.
+
+`bet` and `result` share their cells deliberately. What you backed sits
+directly above what won, so whether they match is a matter of the two lines
+*looking* the same rather than of reading either of them.
+
+There's no `$` on the amounts — every figure is in the same chips, so a symbol
+on each one is a column of noise that says nothing and pushes the digits out of
+line as soon as a sign appears next to it.
+
+Colour turns itself off when it would be noise: piped or redirected output, or
+`NO_COLOR` set ([no-color.org](https://no-color.org)). `--no-colour` forces
+plain text, `FORCE_COLOR=1` forces it on. On Windows the console understands
+ANSI but starts with it switched off, so the bot enables it once at startup —
+that covers PowerShell in both Windows Terminal and the older console host, and
+only ASCII is used, so there's nothing for a code page to mangle.
 
 **ScrollLock pauses it**, at any time, from any window — it reads the toggle
 state, so it works without focus. Turn it off to resume. Ctrl-C stops.
@@ -249,6 +303,7 @@ python -m insidetrack <command> [options]
 | `--strategy pickorder\|chart` | override the strategy for this run |
 | `--input-mode postmessage\|gamepad\|keyboard` | override the input backend |
 | `--debug-images` | save what the recogniser was actually given |
+| `--no-colour` | plain text (also `NO_COLOR=1`; off automatically when piped) |
 
 `python inside_track_bot.py <command>` is the same thing, kept as an entry
 point. `python validate.py` reproduces the strategy analysis (~30s, or

@@ -10,9 +10,18 @@ Detection is kept as a fallback for a box that will not parse, so the old
 path is still there for the reads that need it.
 """
 
+import warnings
 from typing import List, Sequence, Tuple
 
 import numpy as np
+
+# EasyOCR pulls in torch, which announces a deprecation in its own internals
+# when it loads and a pin_memory notice on every recognition pass. Neither is
+# actionable from here and both land in the middle of the race log, so they
+# are silenced by message rather than by category -- anything else torch has
+# to say still gets through.
+warnings.filterwarnings("ignore", message=r".*quantize_per_tensor.*")
+warnings.filterwarnings("ignore", message=r".*pin_memory.*")
 
 Read = Tuple[str, float]        # (text, confidence 0..1)
 
@@ -30,7 +39,6 @@ class Ocr:
 
     def reader(self):
         if self._reader is None:
-            print("Loading EasyOCR (first ever run downloads its model)...")
             import easyocr
             self._reader = easyocr.Reader(["en"], gpu=self._gpu, verbose=False)
         return self._reader
