@@ -28,14 +28,22 @@ def paused() -> bool:
     return bool(_user32.GetKeyState(VK_SCROLL) & 1)
 
 
-def wait_while_paused() -> None:
+def wait_while_paused() -> float:
+    """Block while ScrollLock is on; return the seconds spent waiting.
+
+    The caller keeps that number because a session's rates are measured
+    against the clock: an hourly figure that counts a break as an hour of
+    betting describes the break rather than the bot.
+    """
     if not paused():
-        return
+        return 0.0
     print(console.warn_row("ScrollLock is on -- turn it off to resume",
                            "paused"))
+    started = time.time()
     while paused():
         time.sleep(0.5)
     print(console.row("resumed", tag_style="green"))
+    return time.time() - started
 
 
 class Controller:

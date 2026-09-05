@@ -13,7 +13,7 @@ layout it produces:
               bet      lane 1  EVENS   MAX     10,000
               result   lane 1  EVENS   WON     +10,000
               session  1/1 won                 +10,000
-              session  37.4s      +100.0% ROI  +374,000/h
+              session  37.4s      +100.0% ROI  +962,567/h
 
 `bet` and `result` share their cells deliberately: what we backed sits
 directly above what won, so whether they match is a matter of the two lines
@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from . import console
-from .config import PROFIT_PER_RACE, Settings
+from .config import Settings
 from .controller import wait_while_paused
 from .parsing import odds_label
 from .racelog import Race
@@ -86,15 +86,22 @@ class Tally:
     returned: int = 0
     wins: int = 0
     started: float = 0.0
+    paused: float = 0.0
 
     def hours(self) -> float:
-        return max(1e-9, (time.time() - self.started) / 3600)
-
-    def rate(self) -> float:
-        return self.races / self.hours()
+        """How long the bot has been betting for. Paused time comes off it:
+        ScrollLock is a break, and an hourly figure that counts a coffee as
+        an hour of losing describes the coffee."""
+        return max(1e-9, (time.time() - self.started - self.paused) / 3600)
 
     def net(self) -> int:
         return self.returned - self.graded_stake
+
+    def cash_rate(self) -> float:
+        """The net, per hour of running -- the same money as `net`, over the
+        same graded races, divided by the clock rather than by the stake.
+        It is the ROI beside it in the units the stake is in."""
+        return self.net() / self.hours()
 
 
 class Bot:
@@ -112,7 +119,7 @@ class Bot:
         self._announce()
         self._tally.started = time.time()
         while True:
-            wait_while_paused()
+            self._tally.paused += wait_while_paused()
             self._cycle()
 
     # ----------------------------------------------------------------------
@@ -253,18 +260,20 @@ class Bot:
         print(console.row("session", console.cells((won, 3))
                           + console.money(tally.net(), signed=True)))
         roi = tally.net() / tally.graded_stake * 100
-        # Throughput in the units it is actually worth. Races an hour is a
-        # number you then have to do arithmetic on; this is that arithmetic,
-        # at the average a race returns under the validated strategy. It is
-        # what the rate IMPLIES rather than what this session has made --
-        # the realised figure is the net on the line above, and over a few
-        # dozen races that one is mostly variance.
-        expected = round(tally.rate() * PROFIT_PER_RACE, -3)
+        # The net over the clock: this session's own money, at the speed it
+        # actually made it. It used to be throughput times the strategy's
+        # average return per race, which was a constant dressed as a
+        # measurement -- it printed ~460k/h on a session that was down,
+        # never moved with the results, and read as the one figure on the
+        # line that could not be trusted. What a cycle time is WORTH is a
+        # question about the timings, and `budget` answers it there.
+        # Early on it swings as hard as the ROI beside it does, and for the
+        # same reason: two races are two races.
         # End to end, not the race alone. The race is the part nothing can
         # do anything about; the cycle is the number a change to the timings
-        # or the waits actually moves, and it is what the rate is made of.
+        # or the waits actually moves.
         aside = (console.pad(f"{race.cycle_s:.1f}s", CYCLE_W)
                  + console.pad(f"{roi:+.1f}% ROI", ROI_W)
-                 + f"{expected:+,.0f}/h")
+                 + f"{tally.cash_rate():+,.0f}/h")
         print(console.row("session", console.note(aside.rstrip())))
         print()

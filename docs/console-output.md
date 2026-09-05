@@ -19,12 +19,21 @@ time      lane     1       2       3       4       5       6
           bet      lane 1  EVENS   MAX     10,000
           result   lane 1  EVENS   WON     +10,000
           session  1/1 won                 +10,000
-          session  37.4s      +100.0% ROI  +374,000/h
+          session  37.4s      +100.0% ROI  +962,567/h
 ```
 
-`37.4s` is seconds per race, end to end. `+374,000/h` is what that rate
-implies at the strategy's average return per race — not what this session has
-actually made; the realised figure is the running net on the line above.
+`37.4s` is seconds per race, end to end. `+962,567/h` is this session's own
+net over the clock it has been running for — the same money as the running net
+above it and the same races as the ROI beside it, per hour instead of per
+stake. Time spent paused on ScrollLock is not counted, so a break doesn't read
+as a losing hour.
+
+It swings hard over the first few races, exactly as the ROI does, and for the
+same reason: two races are two races. It used to print throughput × the
+strategy's average return per race, which never moved with the results — a
+session that was down still showed ~+460,000/h. What a given cycle time is
+*worth* is a question about the timings, and `python -m insidetrack budget`
+answers it there.
 
 The settings are a line each, flush left with the timestamps below them. Only
 the settings: which HWND the keys go to and what to do if the menu doesn't
