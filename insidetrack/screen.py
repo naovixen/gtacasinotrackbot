@@ -43,8 +43,9 @@ class Screen:
                 if self._title.lower() in w.title.lower() and w.width > 200]
         if not wins:
             raise WindowMissing(
-                f"No window matching {self._title!r}. Is chiaki-ng running? "
-                "If its title differs, change WINDOW_TITLE.")
+                f"No window matching {self._title!r}. Is chiaki-ng "
+                "running, visible and not minimised? If its title differs, "
+                "set window_title in insidetrack.toml.")
         return wins[0]
 
     def _shot(self, left: int, top: int, width: int, height: int) -> np.ndarray:

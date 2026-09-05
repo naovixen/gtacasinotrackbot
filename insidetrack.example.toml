@@ -1,0 +1,140 @@
+# insidetrack.example.toml -- the template. Copy it and fill it in:
+#
+#     copy insidetrack.example.toml insidetrack.toml      (Windows)
+#     cp   insidetrack.example.toml insidetrack.toml      (bash)
+#
+# ...or skip all of this and let the wizard measure it for you, which is
+# what it is there for:
+#
+#     python -m insidetrack setup
+#
+# It tells you which game screen to be on, grabs the window, and opens that
+# still picture in a window you click the corners on -- with a crosshair and
+# a magnifier, because chiaki-ng hides the mouse pointer over its own window.
+# Your file is not committed: every number below is pixel coordinates inside
+# YOUR chiaki-ng window at YOUR window size, and is wrong on any other.
+
+
+# ---------------------------------------------------------------------------
+# What to talk to
+# ---------------------------------------------------------------------------
+
+# Any window whose title contains this, case-insensitively.
+window_title = "chiaki"
+
+# Which [screens.*] block to use when --screen is not given.
+default_screen = "main"
+
+# postmessage  posts keys to the chiaki-ng window handle only, so you can
+#              keep using the PC. Try this first.
+# gamepad      a virtual DualShock 4 (needs ViGEmBus). System-wide: Steam in
+#              particular will retype it into whatever window you focus.
+# keyboard     types into whatever window is FOCUSED. Last resort.
+input_mode = "postmessage"
+
+# pickorder is the rule validated over 547 races (+50.6% ROI). chart is kept
+# for comparison and loses out-of-sample -- don't run it for money.
+strategy = "pickorder"
+
+# Which window postmessage posts to. Run `python -m insidetrack keys`: it
+# sends Right/Right/Left/Left to each candidate in turn and prints them
+# numbered. Put the number that moved the PS5 cursor here. 0 (or leaving
+# this commented out) means the top-level chiaki-ng window, which is usually
+# the right one.
+# post_target_index = 2
+
+
+# ---------------------------------------------------------------------------
+# Where things are on screen
+# ---------------------------------------------------------------------------
+#
+# Every box is measured from the TOP-LEFT CORNER OF THE CHIAKI-NG WINDOW,
+# not of the screen. The easy way to read them off: run
+#
+#     python -m insidetrack probe
+#
+# which saves calibrate.png -- a plain capture of just the window -- and
+# probe.png with the current boxes drawn on top. Open calibrate.png in
+# anything that shows the cursor's pixel position (MS Paint does, bottom
+# left), and read the corners straight off it.
+#
+# A box can be written either way round, whichever you find easier:
+#
+#     [left, top, width, height]
+#     { left = 246, top = 371, right = 334, bottom = 419 }
+#
+# Have as many [screens.NAME] blocks as you have layouts -- one per monitor,
+# per window size, per resolution -- and pick between them with --screen.
+
+[screens.main]
+
+# The six odds boxes, one per horse, around the PRICE TEXT ("EVENS", "2/1").
+#
+# Draw them GENEROUSLY WIDE. The same box has to hold every price the lane
+# will ever show, and EVENS -- five characters against 2/1's three -- is the
+# longest of them; it may not be on the board while you are measuring. Slack
+# costs nothing, because the reader crops to the text before recognising it.
+# Clipping a price costs every race that shows one. Take the right edge into
+# the empty space, stopping short of the horse's number.
+#
+# The lanes are evenly stacked, so you do not have to measure all six. Give
+# lane 1 as a full box and any lower lane as just its top-left corner, and
+# everything between the two is spaced out evenly. Lane 6 is the one to use
+# -- an error in the spacing gets divided by five rather than multiplied by
+# it, which is not true if you measure lane 2 instead.
+odds_lane1 = { left = 246, top = 371, right = 334, bottom = 419 }
+odds_lane6 = { left = 246, top = 976 }
+# odds_lane2 = ...          # or name every lane, if the spacing is uneven
+
+# The dollar figure on the betting panel. Select a horse (Cross) on the
+# SINGLE EVENT screen and it appears on the right.
+#
+# RUN THE STAKE UP TO $10,000 BEFORE MEASURING (Right onto the increase
+# arrow, hold Cross). That is the only figure this box is ever read for --
+# the bot checks the bet reached the maximum before committing -- and it is
+# the widest: seven characters against the four of the $100 the panel opens
+# on. A box drawn around $100 clips $10,000 in every race. If you would
+# rather not move the stake, leave room for three more digits and a comma.
+#
+# Leave this out entirely and bets are placed unverified.
+bet_amount = [1315, 480, 140, 75]
+
+# The winning horse's LANE NUMBER on the result screen -- just the digit.
+# Let a race finish and measure it there.
+#
+# This grades every race, the losses included, which is what makes the race
+# log worth keeping. Leave it out and races are logged with no result, and
+# `stats` has nothing to report.
+# win_lane = [0, 0, 0, 0]
+
+
+# A second layout, to show the all-six-boxes form. Delete it if you only
+# have one screen.
+# [screens.4k]
+# odds = [
+#     [370,  560, 135, 65],   # lane 1
+#     [370,  743, 135, 65],   # lane 2
+#     [370,  926, 135, 65],   # lane 3
+#     [370, 1109, 135, 65],   # lane 4
+#     [370, 1292, 135, 65],   # lane 5
+#     [370, 1475, 135, 65],   # lane 6
+# ]
+# bet_amount = [1985, 765, 220, 130]
+# win_lane = [1405, 785, 80, 90]
+
+
+# ---------------------------------------------------------------------------
+# Timings -- optional, only if navigation starts dropping presses
+# ---------------------------------------------------------------------------
+#
+# The defaults are what `python -m insidetrack tune` validated here; check
+# yours with the same command before changing anything. If presses do get
+# dropped, raise transition_gap first -- the press after a region change is
+# where it actually happens -- and menu_tap_gap only after that.
+#
+# Pairs are [min, max] seconds, jittered per press.
+#
+# [timing]
+# transition_gap = [0.4, 0.5]
+# menu_tap_gap = [0.05, 0.06]
+# race_wait_min = 32.0

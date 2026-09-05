@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from .backends import make_backend
 from .board import BoardReader
-from .config import POST_TARGET_INDEX, TIMING_NAME, WINDOW_TITLE, Settings
+from .config import TIMING_NAME, Settings
 from .controller import Controller
 from .loop import Bot
 from .machine import Machine
@@ -34,11 +34,11 @@ class App:
 
 
 def build(settings: Settings) -> App:
-    screen = Screen(WINDOW_TITLE)
+    screen = Screen(settings.window_title)
     ocr = Ocr()
     board = BoardReader(screen, ocr, settings)
     backend = make_backend(settings.input_mode, screen.window,
-                           POST_TARGET_INDEX)
+                           settings.post_target_index)
     keys = Controller(backend, screen, settings.timing, settings.dry_run)
     machine = Machine(keys, board, screen, settings)
     log = RaceLog(settings, timing_name=TIMING_NAME)

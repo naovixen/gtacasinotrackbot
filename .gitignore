@@ -1,0 +1,16 @@
+# Your own screen boxes: pixel coordinates in one particular window at one
+# particular size, so they are per-machine. insidetrack.example.toml is the
+# committed template; `python -m insidetrack setup` writes this one.
+insidetrack.toml
+.insidetrack.toml
+
+# What the diagnostics and the setup wizard drop next to you
+calibrate.png
+probe.png
+setup-*.png
+debug_*.png
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/

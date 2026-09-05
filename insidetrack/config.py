@@ -3,20 +3,27 @@
 Everything here is data: no capture, no input, no OCR. The rest of the
 package takes what it needs as constructor arguments, so a profile or a set
 of timings can be swapped for a test without touching a global.
+
+The boxes themselves are NOT here any more. They are pixel coordinates in
+one particular window at one particular size, so hard-coding them meant
+every new setup started by editing source. They come out of the user's own
+`insidetrack.toml` instead -- see `userconfig`, and
+`python -m insidetrack setup`, which measures them by asking you to point at
+them on screen.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Mapping, Optional, Sequence, Tuple
 
 Region = Tuple[int, int, int, int]      # (left, top, width, height) in-window
 Band = Tuple[float, float]              # a jittered delay, seconds
 
-WINDOW_TITLE = "chiaki"
+DEFAULT_WINDOW_TITLE = "chiaki"
 
 
 @dataclass(frozen=True)
 class Profile:
-    """Boxes measured off one screen layout's own calibrate.png.
+    """The boxes for one screen layout, measured off its own calibrate.png.
 
     bet_amount_region enables max-bet verification; win_lane_region enables
     result grading. Either may be None on a screen not measured for it yet.
@@ -25,23 +32,6 @@ class Profile:
     odds_regions: Sequence[Region]
     bet_amount_region: Optional[Region] = None
     win_lane_region: Optional[Region] = None
-
-
-PROFILES: Dict[str, Profile] = {
-    "main": Profile(                       # ultrawide 1440p
-        odds_regions=[(246, 371, 88, 48), (246, 496, 88, 48),
-                      (246, 616, 88, 48), (246, 736, 88, 48),
-                      (246, 856, 88, 48), (246, 976, 88, 48)],
-        bet_amount_region=(1315, 480, 140, 75),
-        win_lane_region=None,              # `probe main` on a result screen
-    ),
-    "4k": Profile(                         # 4K side monitor
-        odds_regions=[(370, 560 + 183 * i, 135, 65) for i in range(6)],
-        bet_amount_region=(1985, 765, 220, 130),
-        win_lane_region=(1405, 785, 80, 90),
-    ),
-}
-DEFAULT_PROFILE = "main"
 
 
 @dataclass(frozen=True)
@@ -94,18 +84,32 @@ class Timing:
 
 @dataclass(frozen=True)
 class Settings:
-    """What a single run was asked to do."""
+    """What a single run was asked to do.
 
-    profile: str = DEFAULT_PROFILE
+    `screens` is whatever the config file defined; `profile` picks one of
+    them. Both travel together so nothing downstream has to reach back into
+    a module global to find out where the odds are.
+    """
+
+    profile: str = "main"
+    screens: Mapping[str, Profile] = field(default_factory=dict)
+    window_title: str = DEFAULT_WINDOW_TITLE
     strategy: str = "pickorder"           # "pickorder" (validated) | "chart"
     input_mode: str = "postmessage"       # "postmessage" | "gamepad" | "keyboard"
+    post_target_index: Optional[int] = None   # None = top-level chiaki window
     dry_run: bool = False
     debug_save: bool = False
     timing: Timing = field(default_factory=Timing)
 
     @property
     def board(self) -> Profile:
-        return PROFILES[self.profile]
+        try:
+            return self.screens[self.profile]
+        except KeyError:
+            known = ", ".join(sorted(self.screens)) or "(none)"
+            raise KeyError(
+                f"no screen {self.profile!r} in the config; it has {known}. "
+                "Run `python -m insidetrack setup`.") from None
 
 
 # Betting. 100 -> 1000 in 100s (9 presses), 1000 -> 10000 in 500s (18) = 27,
@@ -118,9 +122,6 @@ BET_HOLD_SECONDS = 3.0
 
 CONF_TRUST = 0.55              # min per-lane OCR confidence to bet real money
 RECHECK_CONF = 0.80            # below this, spend a second confirming read
-
-# Which HWND postmessage mode targets. None = the top-level chiaki window.
-POST_TARGET_INDEX: Optional[int] = None
 
 # Written into the race log's `timing` column, so a change of numbers is
 # visible in the record afterwards.

@@ -80,9 +80,10 @@ def read_result(app: App) -> None:
     app.machine.ensure_window()
     time.sleep(1.0)
     if app.settings.board.win_lane_region is None:
-        print(f"Profile {app.settings.profile!r} has no win_lane_region. "
-              "Capture a result screen with `probe`, measure the winning "
-              "horse's number box off it, and put it in PROFILES.")
+        print(f"Screen {app.settings.profile!r} has no win_lane box. "
+              "Measure it with `python -m insidetrack setup --screen "
+              f"{app.settings.profile}` on a result screen, or add "
+              "win_lane to that screen in insidetrack.toml.")
         return
     started = time.time()
     lane, raw = app.board.read_win_lane()
@@ -116,9 +117,11 @@ def keys(app: App) -> None:
             post_key(hwnd, key, 0.05)
             time.sleep(0.25)
         time.sleep(1.5)
-    print("\nWhichever index moved the PS5 cursor: set POST_TARGET_INDEX to "
-          "that number in config.py (leave it None if it was [1]). If none "
-          "worked, use input_mode 'gamepad' -- see README-fixes.md.")
+    print("\nWhichever index moved the PS5 cursor: put that number in "
+          "insidetrack.toml as\n  post_target_index = <number>   "
+          "(0, or leaving it out, means [1] -- the top-level window).\n"
+          "If none of them worked, set input_mode = \"gamepad\" there "
+          "instead -- see the README.")
 
 
 def _navigation_cost(timing: Timing) -> float:

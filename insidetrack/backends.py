@@ -107,7 +107,7 @@ class PostMessageBackend:
 
 
 class GamepadBackend:
-    """Virtual DualShock 4 via ViGEmBus. System-wide: see README-fixes.md."""
+    """Virtual DualShock 4 via ViGEmBus. System-wide: see the README."""
 
     name = "gamepad"
 

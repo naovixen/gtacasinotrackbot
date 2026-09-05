@@ -72,8 +72,8 @@ def report(path: str = DEFAULT_PATH) -> None:
     print(f"  {len(rows)} bets over {len(runs)} run(s), "
           f"{len(graded)} with a readable winning lane")
     if not graded:
-        print("  Nothing graded yet -- is win_lane_region right? "
-              "Check with `result`.")
+        print("  Nothing graded yet -- is the win_lane box right? "
+              "Check it with `result`.")
         return
     print()
     summarise("ALL", graded)
@@ -107,9 +107,9 @@ def what_won(rows: Rows) -> None:
     board = [r for r in rows if r.get("win_lane")
              and all(r.get(f"odds{i}") for i in range(1, 7))]
     if not board:
-        print("\n  No races with a readable winning lane yet. Set "
-              "win_lane_region and check it with the `result` command; without "
-              "the races we LOSE teach us nothing.")
+        print("\n  No races with a readable winning lane yet. Measure the "
+              "win_lane box\n  with `insidetrack setup` and check it with "
+              "`result`; without it the races\n  we LOSE teach us nothing.")
         return
     appear, won, lanes = _tally(board)
     print(f"\n  what actually wins ({len(board)} races, whatever we bet):")

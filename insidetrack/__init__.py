@@ -3,7 +3,10 @@
     python -m insidetrack run --screen 4k
 
 The package is layered so each piece can be tested without the game:
-    config      screen profiles, timings, run settings -- data only
+    config      profile/timing/settings shapes -- data only
+    userconfig  insidetrack.toml: the boxes, read and written
+    wizard      `setup`: click the boxes, get a config file
+    picker      the window you click them on
     screen      capture and "has the picture stopped moving?"
     vision      numpy preprocessing of a captured box
     ocr         the recogniser, wrapped
@@ -20,7 +23,9 @@ The package is layered so each piece can be tested without the game:
 NOTE: automation violates Rockstar's ToS; ban/wipe risk is real. Supervise.
 """
 
-from .config import PROFILES, Settings, Timing
+from .config import Profile, Settings, Timing
 from .strategy import decide, grade
+from .userconfig import UserConfig, load
 
-__all__ = ["PROFILES", "Settings", "Timing", "decide", "grade"]
+__all__ = ["Profile", "Settings", "Timing", "UserConfig", "load",
+           "decide", "grade"]

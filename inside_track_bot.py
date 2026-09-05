@@ -4,10 +4,15 @@ The bot itself lives in the `insidetrack` package now; this file is the way
 in, and the compatibility surface for validate.py, which imports it to score
 the shipped strategy against the 547-race log.
 
+    python inside_track_bot.py setup              measure the boxes, first
     python inside_track_bot.py run --screen 4k
     python inside_track_bot.py result --screen 4k
     python inside_track_bot.py probe --screen 4k
     python inside_track_bot.py --help
+
+Start with `setup`: where the odds and the stake sit on screen are pixel
+coordinates in your own chiaki-ng window, so they live in insidetrack.toml
+rather than in the source, and setup measures them for you.
 
 The old positional forms (`run 4k fast`) are gone: the screen is --screen,
 and there are no timing profiles to choose between any more. See
