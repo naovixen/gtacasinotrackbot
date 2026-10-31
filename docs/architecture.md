@@ -64,6 +64,6 @@ cycle, because the top of the loop is the thing that comes back in.
 | `data/race_log.csv` | your own race-by-race record, appended forever |
 | `analysis/validate.py` | reproduces the strategy analysis |
 | `analysis/parse_races.py` | parses the published race logs |
-| `post-info/` | the original posts and charts |
+| `post-info/` | the strategy author's original posts, which you add yourself (not committed) |
 | `docs/` | these notes |
 | `out/` | what the bot generates — calibration and setup captures, debug crops (not committed) |

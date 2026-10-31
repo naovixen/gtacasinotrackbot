@@ -3,7 +3,8 @@
 [← back to the README](../README.md)
 
 The strategy is a published rule, replayed here over its author's own 547-race
-log (`post-info/`). `python analysis/validate.py` reproduces every number
+log. Those posts are the author's, so they are not committed: save the
+second post as `post-info/SecondPost.md` and `python analysis/validate.py` reproduces every number
 below that comes from those 547 races (~30s, or `--quick`); the figures drawn
 from our own `data/race_log.csv` are called out where they appear, and
 `python -m insidetrack stats` is the reader for that half.
